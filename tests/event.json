@@ -1,0 +1,58 @@
+{
+  "version": "0",
+  "id": "80b21c00-5209-51cc-d114-e4918bf46b86",
+  "detail-type": "AWS API Call via CloudTrail",
+  "source": "aws.logs",
+  "account": "123456789023",
+  "time": "2024-10-10T09:39:07Z",
+  "region": "eu-west-1",
+  "resources": [],
+  "detail": {
+    "eventVersion": "1.09",
+    "userIdentity": {
+      "type": "AssumedRole",
+      "principalId": "AROAXZWZ5ZDPJCIURYNML:AWSCloudFormation",
+      "arn": "arn:aws:sts::123456789023:assumed-role/cdk-hnb659fds-cfn-exec-role-123456789023-eu-west-1/AWSCloudFormation",
+      "accountId": "123456789023",
+      "accessKeyId": "ASIAXZWZ5ZDPA4FWUQVO",
+      "sessionContext": {
+        "sessionIssuer": {
+          "type": "Role",
+          "principalId": "AROAXZWZ5ZDPJCIURYNML",
+          "arn": "arn:aws:iam::123456789023:role/cdk-hnb659fds-cfn-exec-role-123456789023-eu-west-1",
+          "accountId": "123456789023",
+          "userName": "cdk-hnb659fds-cfn-exec-role-123456789023-eu-west-1"
+        },
+        "attributes": {
+          "creationDate": "2024-10-10T09:39:07Z",
+          "mfaAuthenticated": "false"
+        }
+      },
+      "invokedBy": "cloudformation.amazonaws.com"
+    },
+    "eventTime": "2024-10-10T13:26:07Z",
+    "eventSource": "logs.amazonaws.com",
+    "eventName": "CreateLogGroup",
+    "awsRegion": "eu-west-1",
+    "sourceIPAddress": "cloudformation.amazonaws.com",
+    "userAgent": "cloudformation.amazonaws.com",
+    "requestParameters": {
+      "logGroupName": "/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures",
+      "tags": {
+        "aws:cloudformation:stack-name": "Logger-20-x86-3fafb-Basic-Middy",
+        "aws:cloudformation:stack-id": "arn:aws:cloudformation:eu-west-1:123456789023:stack/Logger-20-x86-3fafb-Basic-Middy/786d99e0-86eb-11ef-b900-023788cca4db",
+        "Service": "Powertools for AWS e2e tests",
+        "aws:cloudformation:logical-id": "logd1871B7C19C30"
+      }
+    },
+    "responseElements": null,
+    "requestID": "7a901533-1ba2-4c0c-8460-c16d0fa49a08",
+    "eventID": "03c28527-e1bf-4cb3-858c-9e83a06683ff",
+    "readOnly": false,
+    "eventType": "AwsApiCall",
+    "apiVersion": "20140328",
+    "managementEvent": true,
+    "recipientAccountId": "123456789023",
+    "eventCategory": "Management"
+  }
+}

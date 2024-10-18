@@ -1,51 +1,50 @@
 {
-    "name": "ts-project-starter-template",
-    "version": "0.0.1",
-    "description": "An opinionated TypeScript project starter template",
-    "scripts": {
-        "init-environment": "husky install",
-        "build": "tsup",
-        "lint": "eslint --ext .ts,.cjs --no-error-on-unmatched-pattern .",
-        "lint-fix": "eslint --fix --ext .ts,.cjs --no-error-on-unmatched-pattern .",
-        "test": "vitest --run --coverage"
-    },
-    "type": "module",
-    "keywords": [
-        "github",
-        "ts",
-        "typescript",
-        "pr",
-        "template"
-    ],
-    "author": {
-        "name": "Andrea Amorosi",
-        "email": "dreamorosi@gmail.com"
-    },
-    "license": "MIT-0",
-    "engines": {
-        "node": ">=18"
-    },
-    "lint-staged": {
-        "*.ts": "npm run lint-fix",
-        "*.cjs": "npm run lint-fix"
-    },
-    "devDependencies": {
-        "@types/node": "^18.15.11",
-        "@typescript-eslint/eslint-plugin": "^5.57.1",
-        "@typescript-eslint/parser": "^5.57.1",
-        "@vitest/coverage-c8": "^0.30.1",
-        "esbuild": "^0.17.16",
-        "eslint": "^8.38.0",
-        "eslint-config-prettier": "^8.8.0",
-        "eslint-import-resolver-node": "^0.3.7",
-        "eslint-import-resolver-typescript": "^3.5.5",
-        "eslint-plugin-import": "^2.27.5",
-        "eslint-plugin-prettier": "^4.2.1",
-        "husky": "^8.0.3",
-        "lint-staged": "^13.1.2",
-        "prettier": "^2.8.7",
-        "tsup": "^6.7.0",
-        "typescript": "^5.0.4",
-        "vitest": "^0.31.0"
-    }
+  "name": "ts-project-starter-template",
+  "version": "0.0.1",
+  "description": "An opinionated TypeScript project starter template",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "vitest",
+    "cdk": "cdk",
+    "format": "biome check --write",
+    "lint": "biome lint"
+  },
+  "type": "module",
+  "author": {
+    "name": "Andrea Amorosi",
+    "email": "dreamorosi@gmail.com"
+  },
+  "license": "MIT-0",
+  "engines": {
+    "node": ">=20"
+  },
+  "lint-staged": {
+    "*.{ts,js}": "biome check --write"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.3",
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "22.7.5",
+    "@vitest/coverage-v8": "^2.1.2",
+    "aws-cdk": "2.161.1",
+    "aws-sdk-client-mock": "^4.0.2",
+    "aws-sdk-client-mock-vitest": "^4.0.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.1",
+    "typescript": "~5.6.3",
+    "vitest": "^2.1.2"
+  },
+  "dependencies": {
+    "@aws-lambda-powertools/logger": "^2.9.0",
+    "@aws-lambda-powertools/metrics": "^2.9.0",
+    "@aws-lambda-powertools/parser": "^2.9.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.668.0",
+    "@aws-sdk/client-scheduler": "^3.668.0",
+    "aws-cdk-lib": "2.161.1",
+    "constructs": "^10.0.0",
+    "source-map-support": "^0.5.21",
+    "temporal-polyfill": "^0.2.5",
+    "zod": "^3.23.8"
+  }
 }
