@@ -1,0 +1,18 @@
+{
+  "appName": "CWLogsGarbageGoober",
+  "logGroupPatterns": [
+    "/aws/lambda/Logger-",
+    "/aws/lambda/Metrics-",
+    "/aws/lambda/Tracer-",
+    "/aws/lambda/Idempotency-",
+    "/aws/lambda/Parameters-",
+    "/aws/lambda/Layers-",
+    "/aws/lambda/Batch-",
+    "/aws/lambda/EventHandler-"
+  ],
+  "requiredTags": {
+    "Service": "Powertools-for-AWS-e2e-tests"
+  },
+  "deletionDelayDays": 1,
+  "alertsEmailParameter": "/alerts-email"
+}
