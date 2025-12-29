@@ -1,15 +1,12 @@
-import { describe, afterEach, expect, it, vi } from 'vitest';
-import { type EventDetail, handler } from '../src/cw-logs-event-handler.js';
-import { context, getTestEvent } from './helpers.js';
 import {
   CloudWatchLogsClient,
   DescribeLogGroupsCommand,
 } from '@aws-sdk/client-cloudwatch-logs';
-import {
-  SchedulerClient,
-  CreateScheduleCommand,
-} from '@aws-sdk/client-scheduler';
+import { SchedulerClient } from '@aws-sdk/client-scheduler';
 import { mockClient } from 'aws-sdk-client-mock';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { type EventDetail, handler } from '../src/cw-logs-event-handler.js';
+import { context, getTestEvent } from './helpers.js';
 
 vi.hoisted(() => {
   process.env.POWERTOOLS_DEV = 'true';
