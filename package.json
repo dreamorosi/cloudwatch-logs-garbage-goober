@@ -1,7 +1,7 @@
 {
-  "name": "ts-project-starter-template",
+  "name": "cloudwatch-logs-garbage-goober",
   "version": "0.0.1",
-  "description": "An opinionated TypeScript project starter template",
+  "description": "Automated cleanup of CloudWatch Log Groups created by AWS Lambda Powertools e2e tests",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
@@ -31,11 +31,11 @@
     "aws-sdk-client-mock": "^4.1.0",
     "aws-sdk-client-mock-vitest": "^7.0.1",
     "esbuild": "^0.27.2",
-    "tsx": "^4.21.0",
     "typescript": "~5.9.3",
     "vitest": "^4.0.16"
   },
   "dependencies": {
+    "@aws-lambda-powertools/batch": "^2.30.0",
     "@aws-lambda-powertools/logger": "^2.30.0",
     "@aws-lambda-powertools/metrics": "^2.30.0",
     "@aws-lambda-powertools/parser": "^2.30.0",

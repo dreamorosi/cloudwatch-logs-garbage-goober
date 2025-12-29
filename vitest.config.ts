@@ -19,7 +19,7 @@ export default defineConfig({
       exclude: [
         ...coverageConfigDefaults.exclude,
         'src/types.ts',
-        'src/CWLogsGarbageGoober-stack.ts',
+        'src/stack.ts',
       ],
     },
   },

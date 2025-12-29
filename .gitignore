@@ -1,5 +1,8 @@
 .DS_Store
 
+# Application config (use config.json.template as base)
+config.json
+
 *.js
 !jest.config.js
 *.d.ts
@@ -151,3 +154,6 @@ dist
 
 # Temporary files
 **/tmp.ts
+
+.beads/
+.gitattributes

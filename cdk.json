@@ -1,5 +1,5 @@
 {
-  "app": "npx tsx src/CWLogsGarbageGoober-stack.ts",
+  "app": "node src/stack.ts",
   "watch": {
     "include": ["**"],
     "exclude": [
