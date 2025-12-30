@@ -18,7 +18,7 @@ This CDK application automatically schedules and executes deletion of CloudWatch
 
 ## Architecture
 
-```mermaid
+```txt
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
 │   CloudTrail    │────▶│  EventBridge │────▶│  Event Handler  │
 │ CreateLogGroup  │     │     Rule     │     │     Lambda      │
@@ -76,7 +76,7 @@ Then edit `config.json` with your settings:
 
 | Option                 | Description                                         | Default                                 |
 | ---------------------- | --------------------------------------------------- | --------------------------------------- |
-| `appName`              | Prefix for all AWS resource names                   | `CWLogsGarbageGoober`                   |
+| `appName`              | Prefix for all AWS resource names of this service   | `CWLogsGarbageGoober`                   |
 | `logGroupPatterns`     | Log group name prefixes to match                    | Powertools e2e patterns                 |
 | `requiredTags`         | Tags that must be present on CreateLogGroup event   | `Service: Powertools-for-AWS-e2e-tests` |
 | `deletionDelayDays`    | Days to wait after retention period before deleting | `1`                                     |
@@ -108,7 +108,7 @@ cdk deploy -c deletionDelayDays=7
 
 2. **Scheduling**: The Event Handler Lambda:
    - Fetches the log group's retention settings
-   - Creates an EventBridge Scheduler one-time schedule to fire after `retention + deletionDelayDays`
+   - Creates an EventBridge Scheduler one-time schedule to fire after `retention + deletionDelayDays` (in UTC)
    - The schedule auto-deletes after execution
 
 3. **Deletion**: When the schedule fires:
@@ -124,7 +124,7 @@ cdk deploy -c deletionDelayDays=7
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js v22.18.0 or later
 - AWS CLI configured with appropriate credentials
 - An SSM Parameter storing the alert email address
 

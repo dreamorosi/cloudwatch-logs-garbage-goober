@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    versioning-strategy: "increase"
+    groups:
+      cdk:
+        patterns:
+          - "@aws-cdk/*"
+          - "aws-cdk-lib"
+          - "constructs"
+          - "aws-cdk"
+      aws-sdk:
+        patterns:
+          - "@aws-sdk/*"
+          - "aws-sdk"
+          - "aws-sdk-client-mock"
+          - "aws-sdk-client-mock-vitest"
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/coverage-v8"
+      powertools:
+        patterns:
+          - "@aws-lambda-powertools/*"

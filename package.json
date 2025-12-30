@@ -1,10 +1,9 @@
 {
   "name": "cloudwatch-logs-garbage-goober",
   "version": "0.0.1",
-  "description": "Automated cleanup of CloudWatch Log Groups created by AWS Lambda Powertools e2e tests",
+  "description": "Automated cleanup of CloudWatch Log Groups based on configurable patterns and tags",
   "scripts": {
     "build": "tsc",
-    "watch": "tsc -w",
     "test": "vitest",
     "cdk": "cdk",
     "lint:fix": "biome check --write",
@@ -17,7 +16,7 @@
   },
   "license": "MIT-0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18.0"
   },
   "lint-staged": {
     "*.{ts,js}": "biome check --write"
