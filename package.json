@@ -46,6 +46,6 @@
     "constructs": "^10.4.4",
     "source-map-support": "^0.5.21",
     "temporal-polyfill": "^0.3.0",
-    "zod": "^4.2.1"
+    "zod": "^4.3.4"
   }
 }
