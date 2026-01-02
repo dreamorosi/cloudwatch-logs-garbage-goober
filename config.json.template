@@ -14,5 +14,5 @@
     "Service": "Powertools-for-AWS-e2e-tests"
   },
   "deletionDelayDays": 1,
-  "alertsEmailParameter": "/alerts-email"
+  "slackWebhookParameter": "/slack-cloudwatch-alerts-webhook-url"
 }
