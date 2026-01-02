@@ -17,7 +17,7 @@ import {
   ComparisonOperator,
   TreatMissingData,
 } from 'aws-cdk-lib/aws-cloudwatch';
-import { SnsAction } from 'aws-cdk-lib/aws-cloudwatch-actions';
+import { LambdaAction } from 'aws-cdk-lib/aws-cloudwatch-actions';
 import { Rule } from 'aws-cdk-lib/aws-events';
 import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
 import {
@@ -35,12 +35,8 @@ import {
 } from 'aws-cdk-lib/aws-lambda';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
-import type { ITopic } from 'aws-cdk-lib/aws-sns';
-import { Topic } from 'aws-cdk-lib/aws-sns';
-import { EmailSubscription } from 'aws-cdk-lib/aws-sns-subscriptions';
 import type { IQueue } from 'aws-cdk-lib/aws-sqs';
 import { Queue } from 'aws-cdk-lib/aws-sqs';
-import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import { AwsSolutionsChecks, NagSuppressions } from 'cdk-nag';
 import type { Construct } from 'constructs';
 import type { AppConfig } from './types.js';
@@ -65,9 +61,9 @@ const loadConfig = (app: App): AppConfig => {
     deletionDelayDays:
       app.node.tryGetContext('deletionDelayDays') ??
       fileConfig.deletionDelayDays,
-    alertsEmailParameter:
-      app.node.tryGetContext('alertsEmailParameter') ??
-      fileConfig.alertsEmailParameter,
+    slackWebhookParameter:
+      app.node.tryGetContext('slackWebhookParameter') ??
+      fileConfig.slackWebhookParameter,
   };
 };
 
@@ -87,7 +83,7 @@ class LogGroupCleanerStack extends Stack {
       logGroupPatterns,
       requiredTags,
       deletionDelayDays,
-      alertsEmailParameter,
+      slackWebhookParameter,
     } = config;
 
     const deletionDLQ = new Queue(this, 'deletion-dlq', {
@@ -295,21 +291,45 @@ class LogGroupCleanerStack extends Stack {
       })
     );
 
-    // Alerting
-    const alertEmail = StringParameter.valueForStringParameter(
-      this,
-      alertsEmailParameter
+    // Alerting via Slack Workflow Builder
+    const slackNotifier = this.#createTsLambda({
+      id: 'slack-workflow-notifier',
+      entry: './src/slack-workflow-notifier.ts',
+      fnName: `${appName}-slack-workflow-notifier`,
+      environment: {
+        SLACK_WEBHOOK_PARAM_NAME: slackWebhookParameter,
+        APP_NAME: appName,
+      },
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+    });
+
+    // Grant SSM parameter read permissions
+    slackNotifier.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ['ssm:GetParameter', 'kms:Decrypt'],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter${slackWebhookParameter}`,
+        ],
+      })
     );
-    const alertTopic = new Topic(this, 'alert-topic', {
-      topicName: `${appName}-alerts`,
-    });
-    this.#addRequireTlsAndDenyCrossAccount({
-      resource: alertTopic,
-      tlsActions: ['sns:Publish'],
-      denyActions: ['sns:Publish'],
-    });
-    alertTopic.addSubscription(new EmailSubscription(alertEmail));
-    const alarmAction = new SnsAction(alertTopic);
+
+    // Grant CloudWatch permission to invoke Lambda
+    slackNotifier.grantInvoke(new ServicePrincipal('cloudwatch.amazonaws.com'));
+
+    // Suppress CDK-nag warning for AWS managed policy usage
+    if (slackNotifier.role) {
+      NagSuppressions.addResourceSuppressions(slackNotifier.role, [
+        {
+          id: 'AwsSolutions-IAM4',
+          reason:
+            'AWS managed policy AWSLambdaBasicExecutionRole is appropriate for Lambda execution role',
+        },
+      ]);
+    }
+
+    const alarmAction = new LambdaAction(slackNotifier);
 
     // DLQ alarm - any message in DLQ means permanent failure
     const dlqAlarm = new Alarm(this, 'dlq-alarm', {
@@ -434,7 +454,7 @@ class LogGroupCleanerStack extends Stack {
     tlsActions,
     denyActions,
   }: {
-    resource: IQueue | ITopic;
+    resource: IQueue;
     tlsActions: PolicyStatementProps['actions'];
     denyActions: PolicyStatementProps['actions'];
   }) {

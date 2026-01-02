@@ -66,7 +66,7 @@ Then edit `config.json` with your settings:
     "Environment": "test"
   },
   "deletionDelayDays": 1,
-  "alertsEmailParameter": "/alerts-email"
+  "slackWebhookParameter": "/slack-cloudwatch-alerts-webhook-url"
 }
 ```
 
@@ -80,7 +80,7 @@ Then edit `config.json` with your settings:
 | `logGroupPatterns`     | Log group name prefixes to match                    | Powertools e2e patterns                 |
 | `requiredTags`         | Tags that must be present on CreateLogGroup event   | `Service: Powertools-for-AWS-e2e-tests` |
 | `deletionDelayDays`    | Days to wait after retention period before deleting | `1`                                     |
-| `alertsEmailParameter` | SSM parameter name containing alert email           | `/alerts-email`                         |
+| `slackWebhookParameter` | SSM parameter name containing Slack workflow webhook URL | `/slack-cloudwatch-alerts-webhook-url` |
 
 ### CDK Context Overrides
 
@@ -120,22 +120,22 @@ cdk deploy -c deletionDelayDays=7
 4. **Failure Handling**:
    - Failed deletions are retried up to 3 times
    - Persistent failures go to the Dead Letter Queue (DLQ)
-   - CloudWatch Alarms notify via email when issues occur
+   - CloudWatch Alarms notify via Slack when issues occur
 
 ## Prerequisites
 
 - Node.js v22.18.0 or later
 - AWS CLI configured with appropriate credentials
-- An SSM Parameter storing the alert email address
+- A Slack Workflow Builder webhook URL stored in SSM Parameter
 
 Create the SSM parameter before deploying:
 
 ```bash
 aws ssm put-parameter \
-  --name "/alerts-email" \
-  --type "String" \
-  --value "your-email@example.com" \
-  --description "Email address for CloudWatch alarm notifications"
+  --name "/slack-cloudwatch-alerts-webhook-url" \
+  --type "SecureString" \
+  --value "https://hooks.slack.com/triggers/YOUR_WEBHOOK_URL" \
+  --description "Slack Workflow Builder webhook for CloudWatch alarm notifications"
 ```
 
 ## Deployment
@@ -148,17 +148,33 @@ npm ci
 npm run cdk deploy
 ```
 
-After deployment, **confirm the SNS subscription** by clicking the link in the confirmation email.
+After deployment, **configure your Slack Workflow Builder** to receive the webhook notifications with the expected payload format.
 
 ## Monitoring & Alerting
 
-The stack includes CloudWatch Alarms that send email notifications:
+The stack includes CloudWatch Alarms that send Slack notifications:
 
 | Alarm                              | Trigger             | Description                                         |
 | ---------------------------------- | ------------------- | --------------------------------------------------- |
 | `{appName}-DLQ-Messages`           | >= 1 message in DLQ | Permanent deletion failures requiring investigation |
 | `{appName}-EventHandler-Errors`    | >= 1 error in 5 min | Event handler Lambda errors                         |
 | `{appName}-DeletionHandler-Errors` | >= 1 error in 5 min | Deletion handler Lambda errors                      |
+
+### Slack Payload Format
+
+The Slack Workflow Builder webhook receives notifications with this payload:
+
+```json
+{
+  "emoji": "🚨",
+  "alarmName": "CWLogsGarbageGoober-DLQ-Messages",
+  "alarmDescription": "Messages in DLQ indicate repeated deletion failures requiring investigation",
+  "cloudWatchUrl": "https://eu-west-1.console.aws.amazon.com/cloudwatch/home?region=eu-west-1#alarmsV2:alarm/CWLogsGarbageGoober-DLQ-Messages",
+  "region": "eu-west-1",
+  "alarmTime": "2025-01-02 14:28:58 UTC",
+  "appName": "CWLogsGarbageGoober"
+}
+```
 
 ## Development
 
@@ -185,10 +201,10 @@ npm run cdk diff
 | ----------------- | --------------------------------- | -------------------------------------- |
 | Lambda            | `{appName}-event-handler`         | Processes CreateLogGroup events        |
 | Lambda            | `{appName}-deletion-handler`      | Deletes log groups from SQS messages   |
+| Lambda            | `{appName}-slack-workflow-notifier` | Sends alarm notifications to Slack   |
 | SQS Queue         | `{appName}-deletion-queue`        | Queues deletion tasks                  |
 | SQS Queue         | `{appName}-deletion-dlq`          | Dead letter queue for failed deletions |
 | EventBridge Rule  | `{appName}-Rule`                  | Captures CreateLogGroup events         |
-| SNS Topic         | `{appName}-alerts`                | Alarm notifications                    |
 | IAM Role          | `{appName}-publish-to-queue-role` | Allows Scheduler to send to SQS        |
 | CloudWatch Alarms | `{appName}-*`                     | Operational monitoring                 |
 
