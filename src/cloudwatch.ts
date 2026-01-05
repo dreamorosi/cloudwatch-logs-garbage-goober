@@ -11,7 +11,11 @@ const getRegionalCwClient = (region: string): CloudWatchLogsClient => {
   let cwClient = cwClientMap.get(region);
   if (!cwClient) {
     logger.debug('Creating new CloudWatchLogsClient for region', { region });
-    cwClient = new CloudWatchLogsClient({ region });
+    cwClient = new CloudWatchLogsClient({
+      region,
+      retryMode: 'adaptive',
+      maxAttempts: 5,
+    });
     addUserAgentMiddleware(cwClient, 'NO-OP');
     cwClientMap.set(region, cwClient);
   }
