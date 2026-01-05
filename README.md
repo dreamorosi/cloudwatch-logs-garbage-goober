@@ -20,29 +20,36 @@ This CDK application automatically schedules and executes deletion of CloudWatch
 
 ```txt
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│   CloudTrail    │────▶│  EventBridge │────▶│  Event Handler  │
-│ CreateLogGroup  │     │     Rule     │     │     Lambda      │
+│   CloudTrail    │────▶│  EventBridge │────▶│   SQS Queue     │
+│ CreateLogGroup  │     │     Rule     │     │ (Event Buffer)  │
 └─────────────────┘     └──────────────┘     └────────┬────────┘
-                                                      │
-                                                      ▼
-                                             ┌─────────────────┐
-                                             │   EventBridge   │
-                                             │    Scheduler    │
-                                             └────────┬────────┘
-                                                      │
-                                      (retention + deletionDelayDays)
-                                                      │
-                                                      ▼
+                                                       │
+                                                       ▼
+                                              ┌─────────────────┐
+                                              │  Event Handler  │
+                                              │     Lambda      │
+                                              │ (Batch Process) │
+                                              └────────┬────────┘
+                                                       │
+                                                       ▼
+                                              ┌─────────────────┐
+                                              │   EventBridge   │
+                                              │    Scheduler    │
+                                              └────────┬────────┘
+                                                       │
+                                       (retention + deletionDelayDays)
+                                                       │
+                                                       ▼
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
 │   CloudWatch    │◀────│   Deletion   │◀────│   SQS Queue     │
-│   Log Group     │     │   Handler    │     │                 │
+│   Log Group     │     │   Handler    │     │   (Deletion)    │
 │   (deleted)     │     │   Lambda     │     └─────────────────┘
 └─────────────────┘     └──────────────┘              │
-                                                      │ (on failure)
-                                                      ▼
-                                             ┌─────────────────┐
-                                             │      DLQ        │
-                                             └─────────────────┘
+                                                       │ (on failure)
+                                                       ▼
+                                              ┌─────────────────┐
+                                              │      DLQ        │
+                                              └─────────────────┘
 ```
 
 ## Configuration
@@ -106,18 +113,21 @@ cdk deploy -c deletionDelayDays=7
    - Log group names starting with patterns defined in `logGroupPatterns`
    - Tags matching all key-value pairs in `requiredTags`
 
-2. **Scheduling**: The Event Handler Lambda:
-   - Fetches the log group's retention settings
-   - Creates an EventBridge Scheduler one-time schedule to fire after `retention + deletionDelayDays` (in UTC)
-   - The schedule auto-deletes after execution
+2. **Buffering**: Events are sent to an SQS queue for throttling protection and batch processing
 
-3. **Deletion**: When the schedule fires:
-   - A message is sent to the SQS deletion queue
+3. **Scheduling**: The Event Handler Lambda processes SQS messages in batches (up to 10 at once):
+   - Fetches each log group's retention settings
+   - Creates EventBridge Scheduler one-time schedules to fire after `retention + deletionDelayDays` (in UTC)
+   - Schedules auto-delete after execution
+   - Failed events are retried up to 3 times before going to DLQ
+
+4. **Deletion**: When schedules fire:
+   - Messages are sent to the SQS deletion queue
    - The Deletion Handler Lambda processes messages in batches
    - Log groups are deleted via the CloudWatch Logs API
    - Already-deleted log groups are handled gracefully (idempotent)
 
-4. **Failure Handling**:
+5. **Failure Handling**:
    - Failed deletions are retried up to 3 times
    - Persistent failures go to the Dead Letter Queue (DLQ)
    - CloudWatch Alarms notify via Slack when issues occur
@@ -150,15 +160,30 @@ npm run cdk deploy
 
 After deployment, **configure your Slack Workflow Builder** to receive the webhook notifications with the expected payload format.
 
+## Throttling Protection
+
+The system includes built-in protection against AWS API throttling during high-volume events:
+
+- **SQS Event Buffering**: EventBridge events are queued in SQS before Lambda processing
+- **Batch Processing**: Lambda processes up to 10 events per invocation using AWS Lambda Powertools
+- **Controlled Concurrency**: Maximum 10 concurrent Lambda executions prevent overwhelming AWS APIs
+- **Adaptive Retry**: AWS SDK configured with adaptive retry mode and exponential backoff
+- **Partial Failure Handling**: Failed events are retried individually without affecting successful ones
+- **Dead Letter Queue**: Persistent failures are captured for investigation
+
+This architecture prevents the "thundering herd" scenario that can occur during large-scale log group creation events.
+
 ## Monitoring & Alerting
 
 The stack includes CloudWatch Alarms that send Slack notifications:
 
-| Alarm                              | Trigger             | Description                                         |
-| ---------------------------------- | ------------------- | --------------------------------------------------- |
-| `{appName}-DLQ-Messages`           | >= 1 message in DLQ | Permanent deletion failures requiring investigation |
-| `{appName}-EventHandler-Errors`    | >= 1 error in 5 min | Event handler Lambda errors                         |
-| `{appName}-DeletionHandler-Errors` | >= 1 error in 5 min | Deletion handler Lambda errors                      |
+| Alarm                              | Trigger                    | Description                                         |
+| ---------------------------------- | -------------------------- | --------------------------------------------------- |
+| `{appName}-DLQ-Messages`           | >= 1 message in DLQ        | Permanent deletion failures requiring investigation |
+| `{appName}-EventHandler-Errors`    | >= 1 error in 5 min        | Event handler Lambda errors                         |
+| `{appName}-DeletionHandler-Errors` | >= 1 error in 5 min        | Deletion handler Lambda errors                      |
+| `{appName}-EventQueue-Depth`       | >= 50 messages for 10 min  | Event processing queue backlog                      |
+| `{appName}-EventQueue-MessageAge`  | >= 300 seconds for 10 min  | Event processing delays                             |
 
 ### Slack Payload Format
 
@@ -197,16 +222,17 @@ npm run cdk diff
 
 ## AWS Resources Created
 
-| Resource          | Name Pattern                      | Purpose                                |
-| ----------------- | --------------------------------- | -------------------------------------- |
-| Lambda            | `{appName}-event-handler`         | Processes CreateLogGroup events        |
-| Lambda            | `{appName}-deletion-handler`      | Deletes log groups from SQS messages   |
-| Lambda            | `{appName}-slack-workflow-notifier` | Sends alarm notifications to Slack   |
-| SQS Queue         | `{appName}-deletion-queue`        | Queues deletion tasks                  |
-| SQS Queue         | `{appName}-deletion-dlq`          | Dead letter queue for failed deletions |
-| EventBridge Rule  | `{appName}-Rule`                  | Captures CreateLogGroup events         |
-| IAM Role          | `{appName}-publish-to-queue-role` | Allows Scheduler to send to SQS        |
-| CloudWatch Alarms | `{appName}-*`                     | Operational monitoring                 |
+| Resource          | Name Pattern                           | Purpose                                |
+| ----------------- | -------------------------------------- | -------------------------------------- |
+| Lambda            | `{appName}-event-handler`              | Processes CreateLogGroup events in batches |
+| Lambda            | `{appName}-deletion-handler`           | Deletes log groups from SQS messages   |
+| Lambda            | `{appName}-slack-workflow-notifier`    | Sends alarm notifications to Slack   |
+| SQS Queue         | `{appName}-event-processing-queue`     | Buffers CreateLogGroup events for batch processing |
+| SQS Queue         | `{appName}-deletion-queue`             | Queues deletion tasks                  |
+| SQS Queue         | `{appName}-deletion-dlq`               | Dead letter queue for failed deletions |
+| EventBridge Rule  | `{appName}-Rule`                       | Captures CreateLogGroup events         |
+| IAM Role          | `{appName}-publish-to-queue-role`      | Allows Scheduler to send to SQS        |
+| CloudWatch Alarms | `{appName}-*`                          | Operational monitoring                 |
 
 ## License
 
