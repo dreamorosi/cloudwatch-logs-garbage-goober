@@ -4,6 +4,13 @@ import {
   getNumberFromEnv,
   getStringFromEnv,
 } from '@aws-lambda-powertools/commons/utils/env';
+import {
+  BatchProcessor,
+  EventType,
+  processPartialResponse,
+} from '@aws-lambda-powertools/batch';
+import { parser } from '@aws-lambda-powertools/batch/parser';
+import type { ParsedRecord } from '@aws-lambda-powertools/batch/types';
 import { parse } from '@aws-lambda-powertools/parser';
 import { EventBridgeEnvelope } from '@aws-lambda-powertools/parser/envelopes';
 import type { EventBridgeEvent } from '@aws-lambda-powertools/parser/types';
@@ -14,23 +21,34 @@ import {
   FlexibleTimeWindowMode,
   SchedulerClient,
 } from '@aws-sdk/client-scheduler';
-import type { Context } from 'aws-lambda';
+import type { Context, SQSHandler, SQSRecord } from 'aws-lambda';
 import { Temporal } from 'temporal-polyfill';
 import { z } from 'zod';
 import { getRegionalCwClient } from './cloudwatch.js';
 import { logger } from './logger.js';
 
-const schedulerClient = new SchedulerClient();
+const schedulerClient = new SchedulerClient({
+  retryMode: 'adaptive',
+  maxAttempts: 5,
+});
 addUserAgentMiddleware(schedulerClient, 'NO-OP');
 
-const EventDetailSchema = z.object({
-  eventTime: z.string(),
-  awsRegion: z.string(),
-  requestParameters: z.object({
-    logGroupName: z.string(),
+const EventBridgeEventSchema = z.object({
+  detail: z.object({
+    eventTime: z.string(),
+    awsRegion: z.string(),
+    requestParameters: z.object({
+      logGroupName: z.string(),
+    }),
   }),
 });
-export type EventDetail = z.infer<typeof EventDetailSchema>;
+
+const processor = new BatchProcessor(EventType.SQS, {
+  parser,
+  innerSchema: EventBridgeEventSchema,
+  transformer: 'json',
+  logger,
+});
 
 const deletionQueueArn = getStringFromEnv({ key: 'DELETION_QUEUE_ARN' });
 const schedulerRoleArn = getStringFromEnv({ key: 'SCHEDULER_ROLE_ARN' });
@@ -47,8 +65,8 @@ const fetchLogGroupInfo = async ({
   region,
   logGroupName,
 }: {
-  region: EventDetail['awsRegion'];
-  logGroupName: EventDetail['requestParameters']['logGroupName'];
+  region: string;
+  logGroupName: string;
 }) => {
   const cwClient = getRegionalCwClient(region);
 
@@ -88,9 +106,9 @@ const createDeleteSchedule = async ({
   region,
 }: {
   retentionInDays: number;
-  eventTime: EventDetail['eventTime'];
-  logGroupName: EventDetail['requestParameters']['logGroupName'];
-  region: EventDetail['awsRegion'];
+  eventTime: string;
+  logGroupName: string;
+  region: string;
 }) => {
   const deletionDate = Temporal.Instant.from(eventTime)
     .toZonedDateTimeISO('UTC')
@@ -122,39 +140,44 @@ const createDeleteSchedule = async ({
   );
 };
 
-export const handler = async (event: EventBridgeEvent, context: Context) => {
-  logger.addContext(context);
-  logger.logEventIfEnabled(event);
-
-  const parsedEvent = parse(event, EventBridgeEnvelope, EventDetailSchema);
-  const {
-    awsRegion,
-    eventTime,
-    requestParameters: { logGroupName },
-  } = parsedEvent;
+/**
+ * Process a single SQS record containing an EventBridge event
+ */
+const recordHandler = async ({
+  body: {
+    detail: {
+      eventTime,
+      awsRegion,
+      requestParameters: { logGroupName },
+    },
+  },
+  messageId,
+}: ParsedRecord<SQSRecord, z.infer<typeof EventBridgeEventSchema>>) => {
   logger.appendKeys({
     awsRegion,
     logGroupName,
+    messageId,
   });
 
-  try {
-    const logGroup = await fetchLogGroupInfo({
-      region: awsRegion,
-      logGroupName,
-    });
-    const { retentionInDays } = logGroup;
-    await createDeleteSchedule({
-      retentionInDays: retentionInDays ?? 0,
-      eventTime,
-      logGroupName,
-      region: awsRegion,
-    });
-  } catch (error) {
-    logger.error('Error processing event', { error });
-    throw error;
-  } finally {
-    logger.resetKeys();
-  }
+  const logGroup = await fetchLogGroupInfo({
+    region: awsRegion,
+    logGroupName,
+  });
+  const { retentionInDays } = logGroup;
+  await createDeleteSchedule({
+    retentionInDays: retentionInDays ?? 0,
+    eventTime,
+    logGroupName,
+    region: awsRegion,
+  });
+};
 
-  return true;
+export const handler: SQSHandler = async (event, context) => {
+  logger.addContext(context);
+  logger.logEventIfEnabled(event);
+
+  return processPartialResponse(event, recordHandler, processor, {
+    context,
+    throwOnFullBatchFailure: false,
+  });
 };

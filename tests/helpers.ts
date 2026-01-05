@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { SQSEvent } from 'aws-lambda';
 
 const context = {
   callbackWaitsForEmptyEventLoop: true,
@@ -28,4 +29,30 @@ const getTestEvent = <T extends Record<string, unknown>>({
     readFileSync(join(__dirname, eventsPath, `${filename}.json`), 'utf-8')
   ) as T;
 
-export { context, getTestEvent };
+/**
+ * Wrap an EventBridge event in SQS event format for testing
+ */
+const wrapInSQSEvent = (
+  eventBridgeEvent: Record<string, unknown>
+): SQSEvent => ({
+  Records: [
+    {
+      messageId: 'test-message-id',
+      receiptHandle: 'test-receipt-handle',
+      body: JSON.stringify(eventBridgeEvent),
+      attributes: {
+        ApproximateReceiveCount: '1',
+        SentTimestamp: '1545082649183',
+        SenderId: 'AIDAIENQZJOLO23YVJ4VO',
+        ApproximateFirstReceiveTimestamp: '1545082649185',
+      },
+      messageAttributes: {},
+      md5OfBody: 'test-md5',
+      eventSource: 'aws:sqs',
+      eventSourceARN: 'arn:aws:sqs:us-east-2:123456789012:test-queue',
+      awsRegion: 'eu-west-1',
+    },
+  ],
+});
+
+export { context, getTestEvent, wrapInSQSEvent };

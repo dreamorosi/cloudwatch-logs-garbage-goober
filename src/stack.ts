@@ -19,7 +19,7 @@ import {
 } from 'aws-cdk-lib/aws-cloudwatch';
 import { LambdaAction } from 'aws-cdk-lib/aws-cloudwatch-actions';
 import { Rule } from 'aws-cdk-lib/aws-events';
-import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
+import { LambdaFunction, SqsQueue } from 'aws-cdk-lib/aws-events-targets';
 import {
   AnyPrincipal,
   Effect,
@@ -121,6 +121,22 @@ class LogGroupCleanerStack extends Stack {
     });
     deletionQueue.grantSendMessages(publishToQueueRole);
 
+    // Event processing queue for throttling protection
+    const eventProcessingQueue = new Queue(this, 'event-processing-queue', {
+      queueName: `${appName}-event-processing-queue`,
+      retentionPeriod: Duration.days(14),
+      visibilityTimeout: Duration.minutes(5), // 2.5x Lambda timeout (2 min)
+      deadLetterQueue: {
+        queue: deletionDLQ,
+        maxReceiveCount: 3,
+      },
+    });
+    this.#addRequireTlsAndDenyCrossAccount({
+      resource: eventProcessingQueue,
+      tlsActions: ['sqs:*'],
+      denyActions: ['sqs:SendMessage'],
+    });
+
     const fnName = `${appName}-event-handler`;
     const cwLogsEventHandler = this.#createTsLambda({
       id: 'event-handler-fn',
@@ -134,7 +150,7 @@ class LogGroupCleanerStack extends Stack {
         POWERTOOLS_LOGGER_LOG_EVENT: 'false',
         NODE_OPTIONS: '--enable-source-maps',
       },
-      timeout: Duration.seconds(30),
+      timeout: Duration.minutes(2),
       memorySize: 512,
     });
     cwLogsEventHandler.addToRolePolicy(
@@ -203,6 +219,15 @@ class LogGroupCleanerStack extends Stack {
       })
     );
 
+    // Add SQS event source for batch processing
+    cwLogsEventHandler.addEventSource(
+      new SqsEventSource(eventProcessingQueue, {
+        batchSize: 10,
+        maxConcurrency: 10,
+        reportBatchItemFailures: true,
+      })
+    );
+
     // Build EventBridge rule pattern from config
     const tagFilters: Record<string, string[]> = {};
     for (const [key, value] of Object.entries(requiredTags)) {
@@ -225,7 +250,7 @@ class LogGroupCleanerStack extends Stack {
           },
         },
       },
-      targets: [new LambdaFunction(cwLogsEventHandler)],
+      targets: [new SqsQueue(eventProcessingQueue)],
       enabled: true,
     });
 
@@ -383,6 +408,36 @@ class LogGroupCleanerStack extends Stack {
       }
     );
     deletionHandlerErrorAlarm.addAlarmAction(alarmAction);
+
+    // Event processing queue depth alarm
+    const queueDepthAlarm = new Alarm(this, 'queue-depth-alarm', {
+      alarmName: `${appName}-EventQueue-Depth`,
+      alarmDescription:
+        'Event processing queue has high message count indicating processing bottleneck',
+      metric: eventProcessingQueue.metricApproximateNumberOfMessagesVisible({
+        period: Duration.minutes(5),
+      }),
+      threshold: 50,
+      evaluationPeriods: 2,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+    queueDepthAlarm.addAlarmAction(alarmAction);
+
+    // Event processing queue message age alarm
+    const messageAgeAlarm = new Alarm(this, 'message-age-alarm', {
+      alarmName: `${appName}-EventQueue-MessageAge`,
+      alarmDescription:
+        'Event processing queue has old messages indicating processing delays',
+      metric: eventProcessingQueue.metricApproximateAgeOfOldestMessage({
+        period: Duration.minutes(5),
+      }),
+      threshold: 300, // 5 minutes
+      evaluationPeriods: 2,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+    messageAgeAlarm.addAlarmAction(alarmAction);
   }
 
   /**
