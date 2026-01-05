@@ -125,7 +125,7 @@ class LogGroupCleanerStack extends Stack {
     const eventProcessingQueue = new Queue(this, 'event-processing-queue', {
       queueName: `${appName}-event-processing-queue`,
       retentionPeriod: Duration.days(14),
-      visibilityTimeout: Duration.minutes(5), // 2.5x Lambda timeout
+      visibilityTimeout: Duration.minutes(5), // 2.5x Lambda timeout (2 min)
       deadLetterQueue: {
         queue: deletionDLQ,
         maxReceiveCount: 3,

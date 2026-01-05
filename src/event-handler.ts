@@ -9,6 +9,8 @@ import {
   EventType,
   processPartialResponse,
 } from '@aws-lambda-powertools/batch';
+import { parser } from '@aws-lambda-powertools/batch/parser';
+import type { ParsedRecord } from '@aws-lambda-powertools/batch/types';
 import { parse } from '@aws-lambda-powertools/parser';
 import { EventBridgeEnvelope } from '@aws-lambda-powertools/parser/envelopes';
 import type { EventBridgeEvent } from '@aws-lambda-powertools/parser/types';
@@ -31,16 +33,22 @@ const schedulerClient = new SchedulerClient({
 });
 addUserAgentMiddleware(schedulerClient, 'NO-OP');
 
-const processor = new BatchProcessor(EventType.SQS);
-
-const EventDetailSchema = z.object({
-  eventTime: z.string(),
-  awsRegion: z.string(),
-  requestParameters: z.object({
-    logGroupName: z.string(),
+const EventBridgeEventSchema = z.object({
+  detail: z.object({
+    eventTime: z.string(),
+    awsRegion: z.string(),
+    requestParameters: z.object({
+      logGroupName: z.string(),
+    }),
   }),
 });
-export type EventDetail = z.infer<typeof EventDetailSchema>;
+
+const processor = new BatchProcessor(EventType.SQS, {
+  parser,
+  innerSchema: EventBridgeEventSchema,
+  transformer: 'json',
+  logger,
+});
 
 const deletionQueueArn = getStringFromEnv({ key: 'DELETION_QUEUE_ARN' });
 const schedulerRoleArn = getStringFromEnv({ key: 'SCHEDULER_ROLE_ARN' });
@@ -57,8 +65,8 @@ const fetchLogGroupInfo = async ({
   region,
   logGroupName,
 }: {
-  region: EventDetail['awsRegion'];
-  logGroupName: EventDetail['requestParameters']['logGroupName'];
+  region: string;
+  logGroupName: string;
 }) => {
   const cwClient = getRegionalCwClient(region);
 
@@ -98,9 +106,9 @@ const createDeleteSchedule = async ({
   region,
 }: {
   retentionInDays: number;
-  eventTime: EventDetail['eventTime'];
-  logGroupName: EventDetail['requestParameters']['logGroupName'];
-  region: EventDetail['awsRegion'];
+  eventTime: string;
+  logGroupName: string;
+  region: string;
 }) => {
   const deletionDate = Temporal.Instant.from(eventTime)
     .toZonedDateTimeISO('UTC')
@@ -135,24 +143,20 @@ const createDeleteSchedule = async ({
 /**
  * Process a single SQS record containing an EventBridge event
  */
-const recordHandler = async (record: SQSRecord): Promise<void> => {
-  const eventBridgeEvent: EventBridgeEvent = JSON.parse(record.body);
-
-  const parsedEvent = parse(
-    eventBridgeEvent,
-    EventBridgeEnvelope,
-    EventDetailSchema
-  );
-  const {
-    awsRegion,
-    eventTime,
-    requestParameters: { logGroupName },
-  } = parsedEvent;
-
+const recordHandler = async ({
+  body: {
+    detail: {
+      eventTime,
+      awsRegion,
+      requestParameters: { logGroupName },
+    },
+  },
+  messageId,
+}: ParsedRecord<SQSRecord, z.infer<typeof EventBridgeEventSchema>>) => {
   logger.appendKeys({
     awsRegion,
     logGroupName,
-    messageId: record.messageId,
+    messageId,
   });
 
   const logGroup = await fetchLogGroupInfo({
@@ -170,6 +174,7 @@ const recordHandler = async (record: SQSRecord): Promise<void> => {
 
 export const handler: SQSHandler = async (event, context) => {
   logger.addContext(context);
+  logger.logEventIfEnabled(event);
 
   return processPartialResponse(event, recordHandler, processor, {
     context,
