@@ -15,11 +15,12 @@ import {
 import {
   Alarm,
   ComparisonOperator,
+  Metric,
   TreatMissingData,
 } from 'aws-cdk-lib/aws-cloudwatch';
 import { LambdaAction } from 'aws-cdk-lib/aws-cloudwatch-actions';
 import { Rule } from 'aws-cdk-lib/aws-events';
-import { LambdaFunction, SqsQueue } from 'aws-cdk-lib/aws-events-targets';
+import { SqsQueue } from 'aws-cdk-lib/aws-events-targets';
 import {
   AnyPrincipal,
   Effect,
@@ -137,6 +138,17 @@ class LogGroupCleanerStack extends Stack {
       denyActions: ['sqs:SendMessage'],
     });
 
+    // Allow EventBridge to send messages to the queue
+    eventProcessingQueue.addToResourcePolicy(
+      new PolicyStatement({
+        sid: 'AllowEventBridge',
+        effect: Effect.ALLOW,
+        principals: [new ServicePrincipal('events.amazonaws.com')],
+        actions: ['sqs:SendMessage'],
+        resources: [eventProcessingQueue.queueArn],
+      })
+    );
+
     const fnName = `${appName}-event-handler`;
     const cwLogsEventHandler = this.#createTsLambda({
       id: 'event-handler-fn',
@@ -234,7 +246,7 @@ class LogGroupCleanerStack extends Stack {
       tagFilters[key] = [value];
     }
 
-    new Rule(this, 'LogGroupCreationRule', {
+    const rule = new Rule(this, 'LogGroupCreationRule', {
       ruleName: `${appName}-Rule`,
       eventPattern: {
         source: ['aws.logs'],
@@ -355,6 +367,24 @@ class LogGroupCleanerStack extends Stack {
     }
 
     const alarmAction = new LambdaAction(slackNotifier);
+
+    // EventBridge rule failed invocations alarm - happens if events can't be delivered to SQS
+    new Alarm(this, 'RuleFailedInvocationsAlarm', {
+      alarmName: `${appName}-Rule-FailedInvocations`,
+      metric: new Metric({
+        namespace: 'AWS/Events',
+        metricName: 'FailedInvocations',
+        dimensionsMap: {
+          RuleName: rule.ruleName,
+        },
+        period: Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
 
     // DLQ alarm - any message in DLQ means permanent failure
     const dlqAlarm = new Alarm(this, 'dlq-alarm', {
@@ -497,7 +527,7 @@ class LogGroupCleanerStack extends Stack {
   /**
    * Adds two DENY statements to a resource's policy:
    *  - Deny non-TLS requests for specified actions (aws:SecureTransport = false)
-   *  - Deny cross-account requests for specified deny actions (aws:PrincipalAccount != this.account)
+   *  - Deny cross-account requests for specified deny actions (aws:SourceAccount != this.account)
    *
    * @param options - options object
    * @param options.resource - object with addToResourcePolicy method (Queue or Topic)
@@ -534,7 +564,7 @@ class LogGroupCleanerStack extends Stack {
         actions: denyActions,
         resources: ['*'],
         conditions: {
-          StringNotEquals: { 'aws:PrincipalAccount': this.account },
+          StringNotEquals: { 'aws:SourceAccount': this.account },
         },
       })
     );
