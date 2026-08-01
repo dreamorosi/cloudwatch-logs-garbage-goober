@@ -32,7 +32,7 @@
     "aws-sdk-client-mock-vitest": "^7.1.0",
     "cdk-nag": "^2.37.55",
     "esbuild": "^0.28.1",
-    "typescript": "~5.9.3",
+    "typescript": "~7.0.2",
     "vitest": "^4.0.16"
   },
   "dependencies": {
