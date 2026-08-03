@@ -1,9 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { addUserAgentMiddleware } from '@aws-lambda-powertools/commons';
-import {
-  getNumberFromEnv,
-  getStringFromEnv,
-} from '@aws-lambda-powertools/commons/utils/env';
 import {
   BatchProcessor,
   EventType,
@@ -11,6 +6,11 @@ import {
 } from '@aws-lambda-powertools/batch';
 import { parser } from '@aws-lambda-powertools/batch/parser';
 import type { ParsedRecord } from '@aws-lambda-powertools/batch/types';
+import { addUserAgentMiddleware } from '@aws-lambda-powertools/commons';
+import {
+  getNumberFromEnv,
+  getStringFromEnv,
+} from '@aws-lambda-powertools/commons/utils/env';
 import { parse } from '@aws-lambda-powertools/parser';
 import { EventBridgeEnvelope } from '@aws-lambda-powertools/parser/envelopes';
 import type { EventBridgeEvent } from '@aws-lambda-powertools/parser/types';
@@ -53,6 +53,9 @@ const processor = new BatchProcessor(EventType.SQS, {
 const deletionQueueArn = getStringFromEnv({ key: 'DELETION_QUEUE_ARN' });
 const schedulerRoleArn = getStringFromEnv({ key: 'SCHEDULER_ROLE_ARN' });
 const deletionDelayDays = getNumberFromEnv({ key: 'DELETION_DELAY_DAYS' });
+const fallbackRetentionDays = getNumberFromEnv({
+  key: 'FALLBACK_RETENTION_DAYS',
+});
 
 /**
  * Fetch log group info for the given log group name
@@ -164,8 +167,20 @@ const recordHandler = async ({
     logGroupName,
   });
   const { retentionInDays } = logGroup;
+  if (retentionInDays === undefined) {
+    // Either the log group is set to never expire, or `PutRetentionPolicy` has
+    // not been called yet (the event processing queue delays messages to give
+    // it time to land). Rather than silently treating this as a retention of
+    // zero days, which would delete the log group almost immediately, we fall
+    // back to a configured retention period.
+    logger.warn(
+      'Log group has no retention policy, falling back to the configured retention period',
+      { fallbackRetentionDays }
+    );
+  }
+
   await createDeleteSchedule({
-    retentionInDays: retentionInDays ?? 0,
+    retentionInDays: retentionInDays ?? fallbackRetentionDays,
     eventTime,
     logGroupName,
     region: awsRegion,

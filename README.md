@@ -21,7 +21,7 @@ This CDK application automatically schedules and executes deletion of CloudWatch
 ```txt
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
 │   CloudTrail    │────▶│  EventBridge │────▶│   SQS Queue     │
-│ CreateLogGroup  │     │     Rule     │     │ (Event Buffer)  │
+│ CreateLogGroup  │     │     Rule     │     │ (Buffer, +5min) │
 └─────────────────┘     └──────────────┘     └────────┬────────┘
                                                        │
                                                        ▼
@@ -73,6 +73,7 @@ Then edit `config.json` with your settings:
     "Environment": "test"
   },
   "deletionDelayDays": 1,
+  "fallbackRetentionDays": 7,
   "slackWebhookParameter": "/slack-cloudwatch-alerts-webhook-url"
 }
 ```
@@ -81,13 +82,14 @@ Then edit `config.json` with your settings:
 
 ### Configuration Options
 
-| Option                  | Description                                              | Default                                 |
-| ----------------------- | -------------------------------------------------------- | --------------------------------------- |
-| `appName`               | Prefix for all AWS resource names of this service        | `CWLogsGarbageGoober`                   |
-| `logGroupPatterns`      | Log group name prefixes to match                         | Powertools e2e patterns                 |
-| `requiredTags`          | Tags that must be present on CreateLogGroup event        | `Service: Powertools-for-AWS-e2e-tests` |
-| `deletionDelayDays`     | Days to wait after retention period before deleting      | `1`                                     |
-| `slackWebhookParameter` | SSM parameter name containing Slack workflow webhook URL | `/slack-cloudwatch-alerts-webhook-url`  |
+| Option                  | Description                                                    | Default                                 |
+| ----------------------- | -------------------------------------------------------------- | --------------------------------------- |
+| `appName`               | Prefix for all AWS resource names of this service              | `CWLogsGarbageGoober`                   |
+| `logGroupPatterns`      | Log group name prefixes to match                               | Powertools e2e patterns                 |
+| `requiredTags`          | Tags that must be present on CreateLogGroup event              | `Service: Powertools-for-AWS-e2e-tests` |
+| `deletionDelayDays`     | Days to wait after retention period before deleting            | `1`                                     |
+| `fallbackRetentionDays` | Retention assumed for log groups that never expire (see below) | `7`                                     |
+| `slackWebhookParameter` | SSM parameter name containing Slack workflow webhook URL       | `/slack-cloudwatch-alerts-webhook-url`  |
 
 ### CDK Context Overrides
 
@@ -105,7 +107,33 @@ cdk deploy -c requiredTags='{"Environment":"staging","Team":"platform"}'
 
 # Override deletion delay
 cdk deploy -c deletionDelayDays=7
+
+# Override the fallback retention used for never-expire log groups
+cdk deploy -c fallbackRetentionDays=14
 ```
+
+## Retention Handling
+
+CloudTrail records `CreateLogGroup` **before** the retention policy is applied: tools like
+CloudFormation and the AWS SDK call `PutRetentionPolicy` as a separate, subsequent API call. Reading
+the retention immediately after the creation event would therefore often see no retention at all,
+and scheduling a deletion off that would delete log groups almost immediately.
+
+Two mechanisms prevent premature deletion:
+
+- **Delivery delay**: the event processing queue delays each message by **5 minutes**, so the event
+  handler only looks up the retention after `PutRetentionPolicy` has had time to land. The deletion
+  date is still computed from the original CloudTrail `eventTime`, so the delay does not shift the
+  effective deletion date.
+- **Fallback retention**: if the log group still has no retention when the event is processed (it is
+  set to _never expire_, or the retention was applied unusually late), the handler assumes
+  `fallbackRetentionDays` instead of `0` days and logs a warning. Deletion is then scheduled for
+  `eventTime + fallbackRetentionDays + deletionDelayDays`. The default of `7` days is applied even
+  when the option is absent from `config.json`.
+
+> **Note:** log groups matched by this stack are expected to be short-lived, e2e-test log groups.
+> Never-expire log groups are still deleted, just after the fallback period. Increase
+> `fallbackRetentionDays` if you need a longer grace period.
 
 ## Event Flow
 
@@ -113,10 +141,13 @@ cdk deploy -c deletionDelayDays=7
    - Log group names starting with patterns defined in `logGroupPatterns`
    - Tags matching all key-value pairs in `requiredTags`
 
-2. **Buffering**: Events are sent to an SQS queue for throttling protection and batch processing
+2. **Buffering**: Events are sent to an SQS queue for throttling protection and batch processing.
+   The queue delays delivery by 5 minutes so that the log group's retention policy, which is applied
+   after the creation event, is visible to the handler (see [Retention Handling](#retention-handling))
 
 3. **Scheduling**: The Event Handler Lambda processes SQS messages in batches (up to 10 at once):
-   - Fetches each log group's retention settings
+   - Fetches each log group's retention settings, falling back to `fallbackRetentionDays` when the
+     log group has no retention policy
    - Creates EventBridge Scheduler one-time schedules to fire after `retention + deletionDelayDays` (in UTC)
    - Schedules auto-delete after execution
    - Failed events are retried up to 3 times before going to DLQ
@@ -177,14 +208,14 @@ This architecture prevents the "thundering herd" scenario that can occur during 
 
 The stack includes CloudWatch Alarms that send Slack notifications:
 
-| Alarm                              | Trigger                   | Description                                         |
-| ---------------------------------- | ------------------------- | --------------------------------------------------- |
-| `{appName}-Rule-FailedInvocations` | >= 1 failed invocation    | EventBridge rule failed to deliver events to SQS    |
-| `{appName}-DLQ-Messages`           | >= 1 message in DLQ       | Permanent deletion failures requiring investigation |
-| `{appName}-EventHandler-Errors`    | >= 1 error in 5 min       | Event handler Lambda errors                         |
-| `{appName}-DeletionHandler-Errors` | >= 1 error in 5 min       | Deletion handler Lambda errors                      |
-| `{appName}-EventQueue-Depth`       | >= 50 messages for 10 min | Event processing queue backlog                      |
-| `{appName}-EventQueue-MessageAge`  | >= 300 seconds for 10 min | Event processing delays                             |
+| Alarm                              | Trigger                   | Description                                                  |
+| ---------------------------------- | ------------------------- | ------------------------------------------------------------ |
+| `{appName}-Rule-FailedInvocations` | >= 1 failed invocation    | EventBridge rule failed to deliver events to SQS             |
+| `{appName}-DLQ-Messages`           | >= 1 message in DLQ       | Permanent deletion failures requiring investigation          |
+| `{appName}-EventHandler-Errors`    | >= 1 error in 5 min       | Event handler Lambda errors                                  |
+| `{appName}-DeletionHandler-Errors` | >= 1 error in 5 min       | Deletion handler Lambda errors                               |
+| `{appName}-EventQueue-Depth`       | >= 50 messages for 10 min | Event processing queue backlog                               |
+| `{appName}-EventQueue-MessageAge`  | >= 600 seconds for 10 min | Event processing delays (on top of the 5 min delivery delay) |
 
 ### Slack Payload Format
 

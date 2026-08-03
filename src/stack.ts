@@ -42,17 +42,20 @@ import { AwsSolutionsChecks, NagSuppressions } from 'cdk-nag';
 import type { Construct } from 'constructs';
 import type { AppConfig } from './types.js';
 
-const app = new App();
-Aspects.of(app).add(new AwsSolutionsChecks());
+/**
+ * Retention period (in days) applied to log groups that still have no
+ * retention policy when their creation event is processed, unless overridden
+ * via `config.json` or CDK context
+ */
+const DEFAULT_FALLBACK_RETENTION_DAYS = 7;
 
 /**
- * Load configuration from config.json with CDK context overrides
+ * Merge the configuration from config.json with CDK context overrides
+ *
+ * @param app - CDK app used to look up context overrides
+ * @param fileConfig - configuration as read from config.json
  */
-const loadConfig = (app: App): AppConfig => {
-  const fileConfig: AppConfig = JSON.parse(
-    readFileSync('./config.json', 'utf-8')
-  );
-
+const loadConfig = (app: App, fileConfig: AppConfig): AppConfig => {
   return {
     appName: app.node.tryGetContext('appName') ?? fileConfig.appName,
     logGroupPatterns:
@@ -62,13 +65,24 @@ const loadConfig = (app: App): AppConfig => {
     deletionDelayDays:
       app.node.tryGetContext('deletionDelayDays') ??
       fileConfig.deletionDelayDays,
+    // Fall back to a sensible default so that config files predating this
+    // option never end up passing `undefined` down to the event handler
+    fallbackRetentionDays:
+      app.node.tryGetContext('fallbackRetentionDays') ??
+      fileConfig.fallbackRetentionDays ??
+      DEFAULT_FALLBACK_RETENTION_DAYS,
     slackWebhookParameter:
       app.node.tryGetContext('slackWebhookParameter') ??
       fileConfig.slackWebhookParameter,
   };
 };
 
-const config = loadConfig(app);
+/**
+ * `CreateLogGroup` is recorded by CloudTrail before `PutRetentionPolicy` is
+ * called, so events are held in the event processing queue for a short while to
+ * give the retention policy time to be applied before we read it.
+ */
+const RETENTION_SETTLE_DELAY = Duration.minutes(5);
 
 class LogGroupCleanerStack extends Stack {
   public constructor(
@@ -84,6 +98,7 @@ class LogGroupCleanerStack extends Stack {
       logGroupPatterns,
       requiredTags,
       deletionDelayDays,
+      fallbackRetentionDays,
       slackWebhookParameter,
     } = config;
 
@@ -127,6 +142,9 @@ class LogGroupCleanerStack extends Stack {
       queueName: `${appName}-event-processing-queue`,
       retentionPeriod: Duration.days(14),
       visibilityTimeout: Duration.minutes(5), // 2.5x Lambda timeout (2 min)
+      // Delay the first delivery so that the retention policy applied right
+      // after the log group creation is visible to the event handler
+      deliveryDelay: RETENTION_SETTLE_DELAY,
       deadLetterQueue: {
         queue: deletionDLQ,
         maxReceiveCount: 3,
@@ -159,6 +177,7 @@ class LogGroupCleanerStack extends Stack {
         SCHEDULER_ROLE_ARN: publishToQueueRole.roleArn,
         DELETION_QUEUE_ARN: deletionQueue.queueArn,
         DELETION_DELAY_DAYS: String(deletionDelayDays),
+        FALLBACK_RETENTION_DAYS: String(fallbackRetentionDays),
         POWERTOOLS_LOGGER_LOG_EVENT: 'false',
         NODE_OPTIONS: '--enable-source-maps',
       },
@@ -462,7 +481,7 @@ class LogGroupCleanerStack extends Stack {
       metric: eventProcessingQueue.metricApproximateAgeOfOldestMessage({
         period: Duration.minutes(5),
       }),
-      threshold: 300, // 5 minutes
+      threshold: RETENTION_SETTLE_DELAY.toSeconds() + 300, // delivery delay + 5 minutes
       evaluationPeriods: 2,
       comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: TreatMissingData.NOT_BREACHING,
@@ -571,8 +590,23 @@ class LogGroupCleanerStack extends Stack {
   }
 }
 
-new LogGroupCleanerStack(app, config.appName, config, {
-  tags: {
-    Service: config.appName,
-  },
-});
+// Only bootstrap the CDK app when this file is executed as the CDK entry point
+// (see `app` in cdk.json), so that the stack can be imported and synthesized in
+// isolation without reading config.json
+if (process.argv[1] === import.meta.filename) {
+  const app = new App();
+  Aspects.of(app).add(new AwsSolutionsChecks());
+
+  const config = loadConfig(
+    app,
+    JSON.parse(readFileSync('./config.json', 'utf-8'))
+  );
+
+  new LogGroupCleanerStack(app, config.appName, config, {
+    tags: {
+      Service: config.appName,
+    },
+  });
+}
+
+export { DEFAULT_FALLBACK_RETENTION_DAYS, LogGroupCleanerStack, loadConfig };
