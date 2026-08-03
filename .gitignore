@@ -5,6 +5,7 @@ config.json
 
 *.js
 !jest.config.js
+*.js.map
 *.d.ts
 node_modules
 
