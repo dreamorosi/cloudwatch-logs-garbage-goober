@@ -83,12 +83,6 @@ const fetchLogGroupInfo = async ({
   const logGroup = response.logGroups?.find(
     (lg) => lg.logGroupName === logGroupName
   );
-  if (!logGroup) {
-    const message = 'Log group not found or does not exist';
-    logger.error(message);
-    throw new Error(message);
-  }
-
   return logGroup;
 };
 
@@ -172,6 +166,14 @@ const recordHandler = async ({
     region: awsRegion,
     logGroupName,
   });
+  if (!logGroup) {
+    logger.warn('Log group not found, skipping schedule creation', {
+      logGroupName,
+      awsRegion,
+    });
+    return;
+  }
+
   const { retentionInDays, creationTime } = logGroup;
   if (retentionInDays === undefined) {
     // Either the log group is set to never expire, or `PutRetentionPolicy` has
