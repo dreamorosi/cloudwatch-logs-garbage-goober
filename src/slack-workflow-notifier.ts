@@ -8,7 +8,8 @@ import {
 
 const logger = new Logger({ serviceName: 'slack-workflow-notifier' });
 
-// Four 4s attempts plus 7s of backoff total 23s, leaving 7s of Lambda headroom.
+// Worst case: 4 attempts (1 initial + 3 retries) x 4s timeout = 16s, plus
+// 1s + 2s + 4s backoff = 7s; 23s total, within the 30s Lambda timeout.
 const REQUEST_TIMEOUT_MS = 4000;
 
 interface SlackPayload {
