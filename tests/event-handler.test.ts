@@ -45,7 +45,7 @@ describe('cw-logs-event-handler', () => {
     vi.clearAllMocks();
   });
 
-  it('returns batch item failures when the log group cannot be described or found', async () => {
+  it('treats an already-deleted log group as success', async () => {
     // Prepare
     cwClient.on(DescribeLogGroupsCommand).resolves({
       logGroups: [],
@@ -55,11 +55,19 @@ describe('cw-logs-event-handler', () => {
     const result = await invokeHandler(sqsEvent);
 
     // Assess
-    expect(result.batchItemFailures).toHaveLength(1);
-    expect(result.batchItemFailures[0].itemIdentifier).toBe('test-message-id');
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(schedulerClient.commandCalls(CreateScheduleCommand)).toHaveLength(0);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Log group not found, skipping schedule creation')
+    );
+    const warning = vi.mocked(console.warn).mock.calls[0][0];
+    expect(warning).toContain(
+      '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures'
+    );
+    expect(warning).toContain('eu-west-1');
   });
 
-  it('returns batch item failures when logGroups is undefined in response', async () => {
+  it('treats an undefined logGroups response as success', async () => {
     // Prepare
     cwClient.on(DescribeLogGroupsCommand).resolves({});
 
@@ -67,8 +75,24 @@ describe('cw-logs-event-handler', () => {
     const result = await invokeHandler(sqsEvent);
 
     // Assess
-    expect(result.batchItemFailures).toHaveLength(1);
-    expect(result.batchItemFailures[0].itemIdentifier).toBe('test-message-id');
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(schedulerClient.commandCalls(CreateScheduleCommand)).toHaveLength(0);
+  });
+
+  it('returns batch item failures when the log group lookup fails', async () => {
+    // Prepare
+    cwClient
+      .on(DescribeLogGroupsCommand)
+      .rejects(new Error('CloudWatch Logs access denied'));
+
+    // Act
+    const result = await invokeHandler(sqsEvent);
+
+    // Assess
+    expect(result.batchItemFailures).toEqual([
+      { itemIdentifier: 'test-message-id' },
+    ]);
+    expect(schedulerClient.commandCalls(CreateScheduleCommand)).toHaveLength(0);
   });
 
   it('creates a deletion schedule for a log group with retention', async () => {
@@ -265,7 +289,7 @@ describe('cw-logs-event-handler', () => {
     });
   });
 
-  it('returns batch item failures when exact match not found even if prefix matches exist', async () => {
+  it('skips scheduling when exact match not found even if prefix matches exist', async () => {
     // Prepare - return log groups that match prefix but not exact name
     cwClient.on(DescribeLogGroupsCommand).resolves({
       logGroups: [
@@ -282,7 +306,7 @@ describe('cw-logs-event-handler', () => {
     const result = await invokeHandler(sqsEvent);
 
     // Assess
-    expect(result.batchItemFailures).toHaveLength(1);
-    expect(result.batchItemFailures[0].itemIdentifier).toBe('test-message-id');
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(schedulerClient.commandCalls(CreateScheduleCommand)).toHaveLength(0);
   });
 });

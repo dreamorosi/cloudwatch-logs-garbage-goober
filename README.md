@@ -148,6 +148,7 @@ Two mechanisms prevent premature deletion:
 3. **Scheduling**: The Event Handler Lambda processes SQS messages in batches (up to 10 at once):
    - Fetches each log group's retention settings, falling back to `fallbackRetentionDays` when the
      log group has no retention policy
+   - Skips schedule creation successfully when a log group has already been deleted
    - Creates EventBridge Scheduler one-time schedules to fire after `retention + deletionDelayDays` (in UTC)
    - Records the log group's creation time in the scheduled message, so the deletion handler can tell
      which incarnation of the log group the schedule was created for
