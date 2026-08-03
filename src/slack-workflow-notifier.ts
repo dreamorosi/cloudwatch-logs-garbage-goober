@@ -8,6 +8,10 @@ import {
 
 const logger = new Logger({ serviceName: 'slack-workflow-notifier' });
 
+// Worst case: 4 attempts (1 initial + 3 retries) x 4s timeout = 16s, plus
+// 1s + 2s + 4s backoff = 7s; 23s total, within the 30s Lambda timeout.
+const REQUEST_TIMEOUT_MS = 4000;
+
 interface SlackPayload {
   emoji: string;
   alarmName: string;
@@ -93,6 +97,7 @@ async function sendWithRetry(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {
