@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { App } from 'aws-cdk-lib';
-import { Template } from 'aws-cdk-lib/assertions';
+import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FALLBACK_RETENTION_DAYS,
@@ -51,6 +51,19 @@ describe('log group cleaner stack', () => {
           FALLBACK_RETENTION_DAYS: '7',
         },
       },
+    });
+  });
+
+  it('lets the deletion handler look up log groups before deleting them', () => {
+    // Assess - the recreation guard describes the log group before deleting it
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ['logs:DeleteLogGroup', 'logs:DescribeLogGroups'],
+          }),
+        ]),
+      }),
     });
   });
 });

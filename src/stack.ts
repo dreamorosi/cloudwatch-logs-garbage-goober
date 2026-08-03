@@ -300,7 +300,9 @@ class LogGroupCleanerStack extends Stack {
     });
     deletionHandler.addToRolePolicy(
       new PolicyStatement({
-        actions: ['logs:DeleteLogGroup'],
+        // `DescribeLogGroups` is needed to check whether the log group was
+        // recreated after the deletion was scheduled
+        actions: ['logs:DeleteLogGroup', 'logs:DescribeLogGroups'],
         resources: [
           Arn.format(
             {
