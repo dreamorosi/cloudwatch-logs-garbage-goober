@@ -24,7 +24,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
     "@mrgrain/cdk-esbuild": "^5.7.11",
-    "@types/aws-lambda": "^8.10.159",
+    "@types/aws-lambda": "^8.10.162",
     "@types/node": "25.6.0",
     "@vitest/coverage-v8": "^4.1.10",
     "aws-cdk": "2.1129.0",
