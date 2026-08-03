@@ -101,17 +101,22 @@ const fetchLogGroupInfo = async ({
  * @param param.logGroupName - The name of the log group
  * @param param.region - The AWS region where the log group is located
  * @param param.retentionInDays - The number of days to retain logs for
+ * @param param.creationTime - Creation time (epoch ms) of the log group this
+ * schedule is created for, used by the deletion handler to make sure it does
+ * not delete a newer log group that reuses the same name
  */
 const createDeleteSchedule = async ({
   retentionInDays,
   eventTime,
   logGroupName,
   region,
+  creationTime,
 }: {
   retentionInDays: number;
   eventTime: string;
   logGroupName: string;
   region: string;
+  creationTime?: number;
 }) => {
   const deletionDate = Temporal.Instant.from(eventTime)
     .toZonedDateTimeISO('UTC')
@@ -136,6 +141,7 @@ const createDeleteSchedule = async ({
         Input: JSON.stringify({
           logGroupName: logGroupName,
           awsRegion: region,
+          creationTime: creationTime,
         }),
       },
       ActionAfterCompletion: ActionAfterCompletion.DELETE,
@@ -166,7 +172,7 @@ const recordHandler = async ({
     region: awsRegion,
     logGroupName,
   });
-  const { retentionInDays } = logGroup;
+  const { retentionInDays, creationTime } = logGroup;
   if (retentionInDays === undefined) {
     // Either the log group is set to never expire, or `PutRetentionPolicy` has
     // not been called yet (the event processing queue delays messages to give
@@ -184,6 +190,7 @@ const recordHandler = async ({
     eventTime,
     logGroupName,
     region: awsRegion,
+    creationTime,
   });
 };
 

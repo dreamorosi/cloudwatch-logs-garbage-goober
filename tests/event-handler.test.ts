@@ -229,6 +229,42 @@ describe('cw-logs-event-handler', () => {
     });
   });
 
+  it('includes the log group creation time in the schedule payload', async () => {
+    // Prepare
+    cwClient.on(DescribeLogGroupsCommand).resolves({
+      logGroups: [
+        {
+          logGroupName:
+            '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+          retentionInDays: 7,
+          creationTime: 1_728_566_767_000,
+          arn: 'arn:aws:logs:eu-west-1:123456789023:log-group:/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+        },
+      ],
+    });
+    schedulerClient.on(CreateScheduleCommand).resolves({
+      ScheduleArn:
+        'arn:aws:scheduler:eu-west-1:123456789023:schedule/default/DeleteLogGroup-test',
+    });
+
+    // Act
+    const result = await invokeHandler(sqsEvent);
+
+    // Assess - the deletion handler uses the creation time to make sure it does
+    // not delete a newer log group that reuses the same name
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(schedulerClient).toReceiveCommandWith(CreateScheduleCommand, {
+      Target: expect.objectContaining({
+        Input: JSON.stringify({
+          logGroupName:
+            '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+          awsRegion: 'eu-west-1',
+          creationTime: 1_728_566_767_000,
+        }),
+      }),
+    });
+  });
+
   it('returns batch item failures when exact match not found even if prefix matches exist', async () => {
     // Prepare - return log groups that match prefix but not exact name
     cwClient.on(DescribeLogGroupsCommand).resolves({
