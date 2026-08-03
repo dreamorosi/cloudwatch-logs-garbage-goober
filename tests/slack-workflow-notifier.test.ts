@@ -132,6 +132,55 @@ describe('Slack Workflow Notifier', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it('should reject when the webhook URL is unavailable', async () => {
+    const { getParameter } = await import(
+      '@aws-lambda-powertools/parameters/ssm'
+    );
+    vi.mocked(getParameter).mockResolvedValue(undefined);
+    const { handler } = await import('../src/slack-workflow-notifier.js');
+
+    await expect(handler(mockAlarmEvent, mockContext)).rejects.toThrow(
+      'Webhook URL not available'
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('should reject an invalid alarm ARN before sending to Slack', async () => {
+    const { handler } = await import('../src/slack-workflow-notifier.js');
+    const invalidArnEvent = {
+      ...mockAlarmEvent,
+      alarmArn: 'invalid-arn',
+    };
+
+    await expect(handler(invalidArnEvent, mockContext)).rejects.toThrow(
+      'Invalid alarm ARN format: invalid-arn'
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('should retry a failed HTTP response', async () => {
+    vi.useFakeTimers();
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+      });
+
+    const { handler } = await import('../src/slack-workflow-notifier.js');
+    const handlerPromise = handler(mockAlarmEvent, mockContext);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await handlerPromise;
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   it('should retry a timed-out webhook request with an abort signal', async () => {
     vi.useFakeTimers();
     mockFetch
@@ -157,5 +206,20 @@ describe('Slack Workflow Notifier', () => {
     expect(mockFetch.mock.calls[1][1]).toEqual(
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
+  });
+
+  it('should reject after exhausting all retries', async () => {
+    vi.useFakeTimers();
+    const webhookError = new Error('Slack is unavailable');
+    mockFetch.mockRejectedValue(webhookError);
+
+    const { handler } = await import('../src/slack-workflow-notifier.js');
+    const handlerPromise = handler(mockAlarmEvent, mockContext);
+    const rejection = expect(handlerPromise).rejects.toThrow(webhookError);
+
+    await vi.advanceTimersByTimeAsync(7000);
+    await rejection;
+
+    expect(mockFetch).toHaveBeenCalledTimes(4);
   });
 });

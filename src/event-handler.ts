@@ -118,8 +118,8 @@ const createDeleteSchedule = async ({
     .toInstant();
 
   // Extract a short name from the log group for the schedule name
-  const shortName =
-    logGroupName.split('/').pop()?.substring(0, 18) ?? 'unknown';
+  const shortNameStart = logGroupName.lastIndexOf('/') + 1;
+  const shortName = logGroupName.substring(shortNameStart, shortNameStart + 18);
 
   await schedulerClient.send(
     new CreateScheduleCommand({
