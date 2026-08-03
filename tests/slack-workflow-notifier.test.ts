@@ -68,6 +68,7 @@ describe('Slack Workflow Notifier', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -129,5 +130,32 @@ describe('Slack Workflow Notifier', () => {
 
     expect(getParameter).not.toHaveBeenCalled();
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('should retry a timed-out webhook request with an abort signal', async () => {
+    vi.useFakeTimers();
+    mockFetch
+      .mockRejectedValueOnce(
+        new DOMException('The operation timed out', 'TimeoutError')
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+      });
+
+    const { handler } = await import('../src/slack-workflow-notifier.js');
+    const handlerPromise = handler(mockAlarmEvent, mockContext);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await handlerPromise;
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[0][1]).toEqual(
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(mockFetch.mock.calls[1][1]).toEqual(
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 });

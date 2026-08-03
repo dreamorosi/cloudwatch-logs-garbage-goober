@@ -8,6 +8,9 @@ import {
 
 const logger = new Logger({ serviceName: 'slack-workflow-notifier' });
 
+// Four 4s attempts plus 7s of backoff total 23s, leaving 7s of Lambda headroom.
+const REQUEST_TIMEOUT_MS = 4000;
+
 interface SlackPayload {
   emoji: string;
   alarmName: string;
@@ -93,6 +96,7 @@ async function sendWithRetry(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {
