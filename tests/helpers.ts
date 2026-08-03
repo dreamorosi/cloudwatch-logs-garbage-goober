@@ -18,7 +18,7 @@ const context = {
   succeed: () => console.log('Succeeded!'),
 };
 
-const getTestEvent = <T extends Record<string, unknown>>({
+const getTestEvent = <T extends object = Record<string, unknown>>({
   eventsPath,
   filename,
 }: {

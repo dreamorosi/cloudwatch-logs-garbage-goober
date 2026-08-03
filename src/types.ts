@@ -15,6 +15,12 @@ type AppConfig = {
   requiredTags: Record<string, string>;
   /** Days to wait after retention period before deleting */
   deletionDelayDays: number;
+  /**
+   * Retention period (in days) assumed for log groups that still have no
+   * retention policy when the CreateLogGroup event is processed, i.e. log
+   * groups set to never expire.
+   */
+  fallbackRetentionDays: number;
   /** SSM parameter name containing the Slack workflow webhook URL */
   slackWebhookParameter: string;
 };

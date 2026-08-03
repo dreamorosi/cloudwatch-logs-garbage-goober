@@ -6,6 +6,7 @@ import {
   CreateScheduleCommand,
   SchedulerClient,
 } from '@aws-sdk/client-scheduler';
+import type { SQSBatchResponse, SQSEvent } from 'aws-lambda';
 import { mockClient } from 'aws-sdk-client-mock';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handler } from '../src/event-handler.js';
@@ -19,6 +20,7 @@ vi.hoisted(() => {
   process.env.SCHEDULER_ROLE_ARN =
     'arn:aws:iam::123456789023:role/publish-to-queue-role';
   process.env.DELETION_DELAY_DAYS = '1';
+  process.env.FALLBACK_RETENTION_DAYS = '30';
 });
 
 describe('cw-logs-event-handler', () => {
@@ -31,9 +33,16 @@ describe('cw-logs-event-handler', () => {
   });
   const sqsEvent = wrapInSQSEvent(eventBridgeEvent);
 
+  /**
+   * Invoke the handler and narrow the response to the SQS batch response
+   */
+  const invokeHandler = async (event: SQSEvent) =>
+    (await handler(event, context, () => {})) as SQSBatchResponse;
+
   afterEach(() => {
     cwClient.reset();
     schedulerClient.reset();
+    vi.clearAllMocks();
   });
 
   it('returns batch item failures when the log group cannot be described or found', async () => {
@@ -43,7 +52,7 @@ describe('cw-logs-event-handler', () => {
     });
 
     // Act
-    const result = await handler(sqsEvent, context);
+    const result = await invokeHandler(sqsEvent);
 
     // Assess
     expect(result.batchItemFailures).toHaveLength(1);
@@ -55,7 +64,7 @@ describe('cw-logs-event-handler', () => {
     cwClient.on(DescribeLogGroupsCommand).resolves({});
 
     // Act
-    const result = await handler(sqsEvent, context);
+    const result = await invokeHandler(sqsEvent);
 
     // Assess
     expect(result.batchItemFailures).toHaveLength(1);
@@ -80,7 +89,7 @@ describe('cw-logs-event-handler', () => {
     });
 
     // Act
-    const result = await handler(sqsEvent, context);
+    const result = await invokeHandler(sqsEvent);
 
     // Assess
     expect(result.batchItemFailures).toHaveLength(0);
@@ -96,7 +105,36 @@ describe('cw-logs-event-handler', () => {
     });
   });
 
-  it('creates a deletion schedule for a log group without retention (defaults to 0)', async () => {
+  it('schedules based on the retention set after the log group was created', async () => {
+    // Prepare - the retention policy is applied shortly after CreateLogGroup,
+    // so it is already in place by the time the delayed event is processed
+    cwClient.on(DescribeLogGroupsCommand).resolves({
+      logGroups: [
+        {
+          logGroupName:
+            '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+          retentionInDays: 7,
+          arn: 'arn:aws:logs:eu-west-1:123456789023:log-group:/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+        },
+      ],
+    });
+    schedulerClient.on(CreateScheduleCommand).resolves({
+      ScheduleArn:
+        'arn:aws:scheduler:eu-west-1:123456789023:schedule/default/DeleteLogGroup-test',
+    });
+
+    // Act
+    const result = await invokeHandler(sqsEvent);
+
+    // Assess - event time (2024-10-10T13:26:07Z) + 7 days retention + 1 day delay
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(schedulerClient).toReceiveCommandWith(CreateScheduleCommand, {
+      ScheduleExpression: 'at(2024-10-18T13:26:07)',
+    });
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('applies the fallback retention when the log group has no retention', async () => {
     // Prepare
     cwClient.on(DescribeLogGroupsCommand).resolves({
       logGroups: [
@@ -113,16 +151,20 @@ describe('cw-logs-event-handler', () => {
     });
 
     // Act
-    const result = await handler(sqsEvent, context);
+    const result = await invokeHandler(sqsEvent);
 
-    // Assess
+    // Assess - event time (2024-10-10T13:26:07Z) + 30 days fallback + 1 day delay
     expect(result.batchItemFailures).toHaveLength(0);
     expect(schedulerClient).toReceiveCommandWith(CreateScheduleCommand, {
+      ScheduleExpression: 'at(2024-11-10T13:26:07)',
       FlexibleTimeWindow: {
         Mode: 'FLEXIBLE',
         MaximumWindowInMinutes: 5,
       },
     });
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Log group has no retention policy')
+    );
   });
 
   it('uses the correct region from the event', async () => {
@@ -143,7 +185,7 @@ describe('cw-logs-event-handler', () => {
     });
 
     // Act
-    const result = await handler(sqsEvent, context);
+    const result = await invokeHandler(sqsEvent);
 
     // Assess
     expect(result.batchItemFailures).toHaveLength(0);
@@ -177,7 +219,7 @@ describe('cw-logs-event-handler', () => {
     });
 
     // Act
-    const result = await handler(sqsEvent, context);
+    const result = await invokeHandler(sqsEvent);
 
     // Assess - should use retention from exact match (7 days), not first result (30 days)
     expect(result.batchItemFailures).toHaveLength(0);
@@ -201,7 +243,7 @@ describe('cw-logs-event-handler', () => {
     });
 
     // Act
-    const result = await handler(sqsEvent, context);
+    const result = await invokeHandler(sqsEvent);
 
     // Assess
     expect(result.batchItemFailures).toHaveLength(1);
