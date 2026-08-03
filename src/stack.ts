@@ -390,22 +390,30 @@ class LogGroupCleanerStack extends Stack {
     const alarmAction = new LambdaAction(slackNotifier);
 
     // EventBridge rule failed invocations alarm - happens if events can't be delivered to SQS
-    new Alarm(this, 'RuleFailedInvocationsAlarm', {
-      alarmName: `${appName}-Rule-FailedInvocations`,
-      metric: new Metric({
-        namespace: 'AWS/Events',
-        metricName: 'FailedInvocations',
-        dimensionsMap: {
-          RuleName: rule.ruleName,
-        },
-        period: Duration.minutes(5),
-        statistic: 'Sum',
-      }),
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: TreatMissingData.NOT_BREACHING,
-    });
+    const ruleFailedInvocationsAlarm = new Alarm(
+      this,
+      'RuleFailedInvocationsAlarm',
+      {
+        alarmName: `${appName}-Rule-FailedInvocations`,
+        alarmDescription:
+          'EventBridge rule failed invocations indicate events could not be delivered to the processing queue',
+        metric: new Metric({
+          namespace: 'AWS/Events',
+          metricName: 'FailedInvocations',
+          dimensionsMap: {
+            RuleName: rule.ruleName,
+          },
+          period: Duration.minutes(5),
+          statistic: 'Sum',
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      }
+    );
+    ruleFailedInvocationsAlarm.addAlarmAction(alarmAction);
 
     // DLQ alarm - any message in DLQ means permanent failure
     const dlqAlarm = new Alarm(this, 'dlq-alarm', {
