@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs';
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
+import type { AppConfig } from '../src/types.js';
 import {
   DEFAULT_FALLBACK_RETENTION_DAYS,
   LogGroupCleanerStack,
   loadConfig,
 } from '../src/stack.js';
-import type { AppConfig } from '../src/types.js';
 
 // Synthesize with the same feature flags the CDK CLI would pick up, so that the
 // template matches what is actually deployed
@@ -64,6 +64,30 @@ describe('log group cleaner stack', () => {
           }),
         ]),
       }),
+    });
+  });
+
+  it('configures RuleFailedInvocationsAlarm with Slack action', () => {
+    // Prepare - Find the synthesized logical ID for the Slack notifier Lambda
+    const [slackNotifierLogicalId] =
+      Object.entries(
+        template.findResources('AWS::Lambda::Function')
+      ).find(
+        ([, resource]) =>
+          resource.Properties.FunctionName ===
+          'TestApp-slack-workflow-notifier'
+      ) ?? [];
+
+    expect(slackNotifierLogicalId).toBeDefined();
+
+    // Assess - Verify this alarm invokes the Slack notifier Lambda
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'TestApp-Rule-FailedInvocations',
+      AlarmActions: [
+        {
+          'Fn::GetAtt': [slackNotifierLogicalId, 'Arn'],
+        },
+      ],
     });
   });
 });
