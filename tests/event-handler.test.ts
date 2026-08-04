@@ -355,6 +355,41 @@ describe('cw-logs-event-handler', () => {
     expect(schedulerClient.commandCalls(CreateScheduleCommand)).toHaveLength(1);
   });
 
+  it('rounds event times with sub-second precision down to whole seconds', async () => {
+    // Prepare - EventBridge Scheduler rejects `at()` expressions carrying
+    // fractional seconds, so they must never reach it
+    cwClient.on(DescribeLogGroupsCommand).resolves({
+      logGroups: [
+        {
+          logGroupName:
+            '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+          retentionInDays: 7,
+        },
+      ],
+    });
+    schedulerClient.on(CreateScheduleCommand).resolves({
+      ScheduleArn:
+        'arn:aws:scheduler:eu-west-1:123456789023:schedule/default/DeleteLogGroup-test',
+    });
+    const fractionalEvent = {
+      ...eventBridgeEvent,
+      detail: {
+        ...(eventBridgeEvent.detail as Record<string, unknown>),
+        eventTime: '2024-10-10T13:26:07.523Z',
+      },
+    };
+
+    // Act
+    const result = await invokeHandler(wrapInSQSEvent(fractionalEvent));
+
+    // Assess - event time + 7 days retention + 1 day delay, without the
+    // fractional part
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(schedulerClient).toReceiveCommandWith(CreateScheduleCommand, {
+      ScheduleExpression: 'at(2024-10-18T13:26:07)',
+    });
+  });
+
   it('skips scheduling when exact match not found even if prefix matches exist', async () => {
     // Prepare - return log groups that match prefix but not exact name
     cwClient.on(DescribeLogGroupsCommand).resolves({

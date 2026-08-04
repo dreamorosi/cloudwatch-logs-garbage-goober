@@ -82,10 +82,14 @@ const createDeleteSchedule = async ({
   region: string;
   creationTime?: number;
 }) => {
+  // EventBridge Scheduler rejects `at()` expressions with fractional seconds,
+  // so the deletion date is truncated to whole seconds in case the event time
+  // carries sub-second precision
   const deletionDate = Temporal.Instant.from(eventTime)
     .toZonedDateTimeISO('UTC')
     .add({ days: retentionInDays + deletionDelayDays })
-    .toInstant();
+    .toInstant()
+    .round({ smallestUnit: 'second', roundingMode: 'floor' });
 
   // Extract a short name from the log group for the schedule name
   const shortNameStart = logGroupName.lastIndexOf('/') + 1;
