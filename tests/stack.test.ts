@@ -75,6 +75,25 @@ describe('log group cleaner stack', () => {
     });
   });
 
+  it('does not grant the CloudWatch service principal invoke access', () => {
+    // Assess - alarms never invoke Lambda as cloudwatch.amazonaws.com
+    template.resourcePropertiesCountIs(
+      'AWS::Lambda::Permission',
+      { Principal: 'cloudwatch.amazonaws.com' },
+      0
+    );
+  });
+
+  it('lets the alarm action grant its own scoped invoke permission', () => {
+    // Assess - the CDK LambdaAction scopes the permission to the alarm
+    template.hasResourceProperties('AWS::Lambda::Permission', {
+      Action: 'lambda:InvokeFunction',
+      Principal: 'lambda.alarms.cloudwatch.amazonaws.com',
+      SourceAccount: { Ref: 'AWS::AccountId' },
+      SourceArn: Match.anyValue(),
+    });
+  });
+
   it('configures RuleFailedInvocationsAlarm with Slack action', () => {
     // Prepare - Find the synthesized logical ID for the Slack notifier Lambda
     const [slackNotifierLogicalId] =

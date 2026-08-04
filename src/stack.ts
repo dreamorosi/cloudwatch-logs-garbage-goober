@@ -374,9 +374,6 @@ class LogGroupCleanerStack extends Stack {
       })
     );
 
-    // Grant CloudWatch permission to invoke Lambda
-    slackNotifier.grantInvoke(new ServicePrincipal('cloudwatch.amazonaws.com'));
-
     // Suppress CDK-nag warning for AWS managed policy usage
     if (slackNotifier.role) {
       NagSuppressions.addResourceSuppressions(slackNotifier.role, [
@@ -388,6 +385,8 @@ class LogGroupCleanerStack extends Stack {
       ]);
     }
 
+    // Each alarm using this action gets its own `lambda:InvokeFunction`
+    // permission, scoped to the alarm ARN, so no manual grant is needed
     const alarmAction = new LambdaAction(slackNotifier);
 
     // EventBridge rule failed invocations alarm - happens if events can't be delivered to SQS
