@@ -3,6 +3,7 @@ import {
   DescribeLogGroupsCommand,
 } from '@aws-sdk/client-cloudwatch-logs';
 import {
+  ConflictException,
   CreateScheduleCommand,
   SchedulerClient,
 } from '@aws-sdk/client-scheduler';
@@ -443,5 +444,129 @@ describe('cw-logs-event-handler', () => {
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining('Log group not found, skipping schedule creation')
     );
+  });
+
+  it('reuses the same schedule name when the same event is reprocessed', async () => {
+    // Prepare - SQS can redeliver the same message, i.e. the handler must
+    // converge on a single schedule instead of creating a new one every time
+    cwClient.on(DescribeLogGroupsCommand).resolves({
+      logGroups: [
+        {
+          logGroupName:
+            '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+          retentionInDays: 7,
+        },
+      ],
+    });
+    schedulerClient.on(CreateScheduleCommand).resolves({
+      ScheduleArn:
+        'arn:aws:scheduler:eu-west-1:123456789023:schedule/default/DeleteLogGroup-test',
+    });
+
+    // Act
+    await invokeHandler(sqsEvent);
+    await invokeHandler(sqsEvent);
+
+    // Assess
+    const calls = schedulerClient.commandCalls(CreateScheduleCommand);
+    expect(calls).toHaveLength(2);
+    const [firstName, secondName] = calls.map(
+      (call) => call.args[0].input.Name as string
+    );
+    expect(firstName).toEqual(secondName);
+    expect(firstName).toMatch(
+      /^DeleteLogGroup-Logger-20-x86-132f-[0-9a-f]{10}$/
+    );
+    // EventBridge Scheduler caps schedule names at 64 characters
+    expect(firstName.length).toBeLessThanOrEqual(64);
+  });
+
+  it('uses a different schedule name for a log group recreated later', async () => {
+    // Prepare - the same log group name created again at a later time is a new
+    // incarnation, which needs a schedule of its own
+    cwClient.on(DescribeLogGroupsCommand).resolves({
+      logGroups: [
+        {
+          logGroupName:
+            '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+          retentionInDays: 7,
+        },
+      ],
+    });
+    schedulerClient.on(CreateScheduleCommand).resolves({
+      ScheduleArn:
+        'arn:aws:scheduler:eu-west-1:123456789023:schedule/default/DeleteLogGroup-test',
+    });
+    const recreationEvent = {
+      ...eventBridgeEvent,
+      detail: {
+        ...(eventBridgeEvent.detail as Record<string, unknown>),
+        eventTime: '2024-10-11T13:26:07Z',
+      },
+    };
+
+    // Act
+    await invokeHandler(sqsEvent);
+    await invokeHandler(wrapInSQSEvent(recreationEvent));
+
+    // Assess
+    const [firstName, secondName] = schedulerClient
+      .commandCalls(CreateScheduleCommand)
+      .map((call) => call.args[0].input.Name as string);
+    expect(firstName).not.toEqual(secondName);
+  });
+
+  it('treats an already existing schedule as success', async () => {
+    // Prepare - a previous processing attempt for this message already created
+    // the schedule
+    cwClient.on(DescribeLogGroupsCommand).resolves({
+      logGroups: [
+        {
+          logGroupName:
+            '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+          retentionInDays: 7,
+        },
+      ],
+    });
+    schedulerClient.on(CreateScheduleCommand).rejects(
+      new ConflictException({
+        message: 'Schedule already exists',
+        Message: 'Schedule already exists',
+        $metadata: {},
+      })
+    );
+
+    // Act
+    const result = await invokeHandler(sqsEvent);
+
+    // Assess
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(console.info).toHaveBeenCalledWith(
+      expect.stringContaining('Deletion schedule already exists')
+    );
+  });
+
+  it('returns batch item failures when schedule creation fails', async () => {
+    // Prepare
+    cwClient.on(DescribeLogGroupsCommand).resolves({
+      logGroups: [
+        {
+          logGroupName:
+            '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+          retentionInDays: 7,
+        },
+      ],
+    });
+    schedulerClient
+      .on(CreateScheduleCommand)
+      .rejects(new Error('Scheduler access denied'));
+
+    // Act
+    const result = await invokeHandler(sqsEvent);
+
+    // Assess
+    expect(result.batchItemFailures).toEqual([
+      { itemIdentifier: 'test-message-id' },
+    ]);
   });
 });

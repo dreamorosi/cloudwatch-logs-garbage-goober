@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   BatchProcessor,
   EventType,
@@ -16,6 +16,7 @@ import { EventBridgeEnvelope } from '@aws-lambda-powertools/parser/envelopes';
 import type { EventBridgeEvent } from '@aws-lambda-powertools/parser/types';
 import {
   ActionAfterCompletion,
+  ConflictException,
   CreateScheduleCommand,
   FlexibleTimeWindowMode,
   SchedulerClient,
@@ -57,6 +58,42 @@ const fallbackRetentionDays = getNumberFromEnv({
 });
 
 /**
+ * Build the name of the schedule that deletes the given log group
+ *
+ * The name is derived from the log group name and the creation event time so
+ * that reprocessing the same message always produces the same name, which
+ * makes schedule creation idempotent across SQS redeliveries. The event time
+ * is part of the digest so that a log group that is deleted and recreated with
+ * the same name still gets a schedule of its own.
+ *
+ * The result is at most 44 characters long and only contains characters
+ * allowed by EventBridge Scheduler, which caps names at 64 characters.
+ *
+ * @param param - options object
+ * @param param.logGroupName - The name of the log group
+ * @param param.eventTime - The time the log group was created
+ */
+const getScheduleName = ({
+  logGroupName,
+  eventTime,
+}: {
+  logGroupName: string;
+  eventTime: string;
+}) => {
+  // Extract a short name from the log group for the schedule name
+  const shortNameStart = logGroupName.lastIndexOf('/') + 1;
+  const shortName = logGroupName
+    .substring(shortNameStart, shortNameStart + 18)
+    .replace(/[^\w.-]/g, '-');
+  const digest = createHash('sha256')
+    .update(`${logGroupName}|${eventTime}`)
+    .digest('hex')
+    .substring(0, 10);
+
+  return `DeleteLogGroup-${shortName}-${digest}`;
+};
+
+/**
  * Create an Amazon EventBridge Scheduler schedule to delete the log group
  * after the retention period plus configured delay
  *
@@ -91,30 +128,40 @@ const createDeleteSchedule = async ({
     .toInstant()
     .round({ smallestUnit: 'second', roundingMode: 'floor' });
 
-  // Extract a short name from the log group for the schedule name
-  const shortNameStart = logGroupName.lastIndexOf('/') + 1;
-  const shortName = logGroupName.substring(shortNameStart, shortNameStart + 18);
+  const scheduleName = getScheduleName({ logGroupName, eventTime });
 
-  await schedulerClient.send(
-    new CreateScheduleCommand({
-      ScheduleExpression: `at(${deletionDate.toString().replace('Z', '')})`,
-      FlexibleTimeWindow: {
-        Mode: FlexibleTimeWindowMode.FLEXIBLE,
-        MaximumWindowInMinutes: 5,
-      },
-      Name: `DeleteLogGroup-${shortName}-${randomUUID().substring(0, 5)}`,
-      Target: {
-        RoleArn: schedulerRoleArn,
-        Arn: deletionQueueArn,
-        Input: JSON.stringify({
-          logGroupName: logGroupName,
-          awsRegion: region,
-          creationTime: creationTime,
-        }),
-      },
-      ActionAfterCompletion: ActionAfterCompletion.DELETE,
-    })
-  );
+  try {
+    await schedulerClient.send(
+      new CreateScheduleCommand({
+        ScheduleExpression: `at(${deletionDate.toString().replace('Z', '')})`,
+        FlexibleTimeWindow: {
+          Mode: FlexibleTimeWindowMode.FLEXIBLE,
+          MaximumWindowInMinutes: 5,
+        },
+        Name: scheduleName,
+        Target: {
+          RoleArn: schedulerRoleArn,
+          Arn: deletionQueueArn,
+          Input: JSON.stringify({
+            logGroupName: logGroupName,
+            awsRegion: region,
+            creationTime: creationTime,
+          }),
+        },
+        ActionAfterCompletion: ActionAfterCompletion.DELETE,
+      })
+    );
+  } catch (error) {
+    if (error instanceof ConflictException) {
+      // The schedule was already created by an earlier attempt at processing
+      // this same event, so there is nothing left to do
+      logger.info('Deletion schedule already exists, skipping creation', {
+        scheduleName,
+      });
+      return;
+    }
+    throw error;
+  }
 };
 
 /**
