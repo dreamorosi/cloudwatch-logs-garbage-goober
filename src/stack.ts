@@ -115,6 +115,7 @@ class LogGroupCleanerStack extends Stack {
     const deletionQueue = new Queue(this, 'deletion-queue', {
       queueName: `${appName}-deletion-queue`,
       retentionPeriod: Duration.days(14),
+      visibilityTimeout: Duration.minutes(3), // 6x Lambda timeout (30 sec)
       deadLetterQueue: {
         queue: deletionDLQ,
         maxReceiveCount: 3,

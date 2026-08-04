@@ -41,6 +41,14 @@ describe('log group cleaner stack', () => {
     });
   });
 
+  it('keeps deletion messages hidden until the handler can time out', () => {
+    // Assess - six times the 30 sec deletion handler timeout
+    template.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'TestApp-deletion-queue',
+      VisibilityTimeout: 180,
+    });
+  });
+
   it('passes the fallback retention to the event handler', () => {
     // Assess
     template.hasResourceProperties('AWS::Lambda::Function', {
