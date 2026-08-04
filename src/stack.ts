@@ -682,9 +682,21 @@ class LogGroupCleanerStack extends Stack {
   }
 
   /**
-   * Adds two DENY statements to a resource's policy:
+   * Adds three DENY statements to a resource's policy:
    *  - Deny non-TLS requests for specified actions (aws:SecureTransport = false)
-   *  - Deny cross-account requests for specified deny actions (aws:SourceAccount != this.account)
+   *  - Deny out-of-account IAM principals for the specified deny actions
+   *  - Deny cross-account service deliveries for the specified deny actions
+   *
+   * The cross-account deny is split in two because the two kinds of callers
+   * populate different request context keys, and negated condition operators
+   * match requests where the key is missing altogether. `aws:SourceAccount` is
+   * only set on service-to-service calls, so a lone
+   * `StringNotEquals: aws:SourceAccount` denies every IAM-principal call
+   * (including EventBridge Scheduler delivering through an assumed role);
+   * conversely a lone `StringNotEquals: aws:PrincipalAccount` denies every
+   * service delivery, since services calling on their own behalf have no
+   * principal account. Each statement therefore only applies to the caller
+   * shape whose keys it can actually read.
    *
    * @param options - options object
    * @param options.resource - object with addToResourcePolicy method (Queue or Topic)
@@ -713,15 +725,36 @@ class LogGroupCleanerStack extends Stack {
       })
     );
 
+    // Callers with an IAM principal: deny anything outside this account, and
+    // step aside for service principals, whose `aws:PrincipalAccount` is not
+    // this account (or absent) even when they act on our behalf
     resource.addToResourcePolicy(
       new PolicyStatement({
-        sid: 'DenyCrossAccount',
+        sid: 'DenyCrossAccountPrincipals',
+        effect: Effect.DENY,
+        principals: [new AnyPrincipal()],
+        actions: denyActions,
+        resources: ['*'],
+        conditions: {
+          StringNotEquals: { 'aws:PrincipalAccount': this.account },
+          Bool: { 'aws:PrincipalIsAWSService': 'false' },
+        },
+      })
+    );
+
+    // Service-to-service callers: deny them when they act for another account.
+    // The `Null` check keeps the statement from matching IAM-principal calls,
+    // which carry no `aws:SourceAccount` at all
+    resource.addToResourcePolicy(
+      new PolicyStatement({
+        sid: 'DenyCrossAccountServices',
         effect: Effect.DENY,
         principals: [new AnyPrincipal()],
         actions: denyActions,
         resources: ['*'],
         conditions: {
           StringNotEquals: { 'aws:SourceAccount': this.account },
+          Null: { 'aws:SourceAccount': 'false' },
         },
       })
     );
