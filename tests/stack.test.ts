@@ -220,10 +220,18 @@ describe('log group cleaner stack', () => {
     'TestApp-event-processing-dlq',
   ];
 
-  // `aws:PrincipalAccount` is only set for IAM principals and `aws:SourceAccount`
-  // only for service-to-service calls, and a negated operator matches a request
-  // that lacks the key entirely — so each deny is gated on the caller shape whose
-  // keys it can actually read
+  // `aws:SourceAccount` is only set for service-to-service calls, and a negated
+  // operator matches a request that lacks the key entirely. The principal deny
+  // is gated to non-service callers by `aws:PrincipalIsAWSService`; the service
+  // deny is gated by checking that `aws:SourceAccount` is present.
+  const requireTls = {
+    Sid: 'RequireTLS',
+    Effect: 'Deny',
+    Principal: { AWS: '*' },
+    Action: 'sqs:*',
+    Resource: '*',
+    Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+  };
   const denyCrossAccountPrincipals = {
     Sid: 'DenyCrossAccountPrincipals',
     Effect: 'Deny',
@@ -251,24 +259,18 @@ describe('log group cleaner stack', () => {
     // Assess - a single deny on `aws:SourceAccount` would also catch every IAM
     // principal, including the role EventBridge Scheduler delivers with
     expect(queuePolicyStatementsOf('TestApp-deletion-queue')).toEqual([
-      {
-        Sid: 'RequireTLS',
-        Effect: 'Deny',
-        Principal: { AWS: '*' },
-        Action: 'sqs:*',
-        Resource: '*',
-        Condition: { Bool: { 'aws:SecureTransport': 'false' } },
-      },
+      requireTls,
       denyCrossAccountPrincipals,
       denyCrossAccountServices,
     ]);
   });
 
-  it('applies both cross-account denies to every queue', () => {
+  it('applies the TLS and both cross-account denies to every queue', () => {
     // Assess - queues and DLQs alike stay closed to other accounts
     for (const queueName of allQueueNames) {
       expect(queuePolicyStatementsOf(queueName)).toEqual(
         expect.arrayContaining([
+          requireTls,
           denyCrossAccountPrincipals,
           denyCrossAccountServices,
         ])

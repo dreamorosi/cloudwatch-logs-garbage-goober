@@ -717,16 +717,14 @@ class LogGroupCleanerStack extends Stack {
    *  - Deny out-of-account IAM principals for the specified deny actions
    *  - Deny cross-account service deliveries for the specified deny actions
    *
-   * The cross-account deny is split in two because the two kinds of callers
-   * populate different request context keys, and negated condition operators
-   * match requests where the key is missing altogether. `aws:SourceAccount` is
-   * only set on service-to-service calls, so a lone
+   * The cross-account deny is split in two because `aws:SourceAccount` is only
+   * populated for service-to-service calls, and negated condition operators
+   * match requests where the key is missing altogether. A lone
    * `StringNotEquals: aws:SourceAccount` denies every IAM-principal call
    * (including EventBridge Scheduler delivering through an assumed role);
-   * conversely a lone `StringNotEquals: aws:PrincipalAccount` denies every
-   * service delivery, since services calling on their own behalf have no
-   * principal account. Each statement therefore only applies to the caller
-   * shape whose keys it can actually read.
+   * `aws:PrincipalIsAWSService` therefore gates that statement's counterpart
+   * to non-service callers, while a `Null` check gates the service-shaped deny
+   * to requests where `aws:SourceAccount` is present.
    *
    * @param options - options object
    * @param options.resource - object with addToResourcePolicy method (Queue or Topic)
