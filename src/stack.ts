@@ -139,6 +139,15 @@ class LogGroupCleanerStack extends Stack {
     deletionQueue.grantSendMessages(publishToQueueRole);
 
     // Event processing queue for throttling protection
+    const eventProcessingDLQ = new Queue(this, 'event-processing-dlq', {
+      queueName: `${appName}-event-processing-dlq`,
+      retentionPeriod: Duration.days(14),
+    });
+    this.#addRequireTlsAndDenyCrossAccount({
+      resource: eventProcessingDLQ,
+      tlsActions: ['sqs:*'],
+      denyActions: ['sqs:SendMessage'],
+    });
     const eventProcessingQueue = new Queue(this, 'event-processing-queue', {
       queueName: `${appName}-event-processing-queue`,
       retentionPeriod: Duration.days(14),
@@ -146,8 +155,11 @@ class LogGroupCleanerStack extends Stack {
       // Delay the first delivery so that the retention policy applied right
       // after the log group creation is visible to the event handler
       deliveryDelay: RETENTION_SETTLE_DELAY,
+      // Raw CloudTrail events and deletion commands are different message
+      // shapes, so each queue dead-letters into its own DLQ to keep redrive
+      // unambiguous
       deadLetterQueue: {
-        queue: deletionDLQ,
+        queue: eventProcessingDLQ,
         maxReceiveCount: 3,
       },
     });
@@ -430,11 +442,11 @@ class LogGroupCleanerStack extends Stack {
     );
     ruleFailedInvocationsAlarm.addAlarmAction(alarmAction);
 
-    // DLQ alarm - any message in DLQ means permanent failure
+    // Deletion DLQ alarm - any message in DLQ means permanent failure
     const dlqAlarm = new Alarm(this, 'dlq-alarm', {
       alarmName: `${appName}-DLQ-Messages`,
       alarmDescription:
-        'Messages in DLQ indicate repeated deletion failures requiring investigation',
+        'Messages in the deletion DLQ indicate repeated deletion failures requiring investigation',
       metric: deletionDLQ.metricApproximateNumberOfMessagesVisible({
         period: Duration.minutes(1),
       }),
@@ -444,6 +456,27 @@ class LogGroupCleanerStack extends Stack {
       treatMissingData: TreatMissingData.NOT_BREACHING,
     });
     dlqAlarm.addAlarmAction(alarmAction);
+
+    // Event processing DLQ alarm - these log groups are never scheduled for
+    // deletion, so they would linger until someone redrives the messages
+    const eventProcessingDlqAlarm = new Alarm(
+      this,
+      'event-processing-dlq-alarm',
+      {
+        alarmName: `${appName}-EventQueue-DLQ-Messages`,
+        alarmDescription:
+          'Messages in the event processing DLQ indicate log group creation events that could not be scheduled for deletion',
+        metric: eventProcessingDLQ.metricApproximateNumberOfMessagesVisible({
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      }
+    );
+    eventProcessingDlqAlarm.addAlarmAction(alarmAction);
 
     // Event handler errors alarm
     const eventHandlerErrorAlarm = new Alarm(

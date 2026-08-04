@@ -33,6 +33,13 @@ describe('log group cleaner stack', () => {
     )
   );
 
+  // Logical ID of the Slack notifier Lambda, needed to assert alarm actions
+  const [slackNotifierLogicalId] =
+    Object.entries(template.findResources('AWS::Lambda::Function')).find(
+      ([, resource]) =>
+        resource.Properties.FunctionName === 'TestApp-slack-workflow-notifier'
+    ) ?? [];
+
   it('delays event processing so that retention policies have time to be applied', () => {
     // Assess - CreateLogGroup is recorded before PutRetentionPolicy is called
     template.hasResourceProperties('AWS::SQS::Queue', {
@@ -124,16 +131,7 @@ describe('log group cleaner stack', () => {
   });
 
   it('configures RuleFailedInvocationsAlarm with Slack action', () => {
-    // Prepare - Find the synthesized logical ID for the Slack notifier Lambda
-    const [slackNotifierLogicalId] =
-      Object.entries(
-        template.findResources('AWS::Lambda::Function')
-      ).find(
-        ([, resource]) =>
-          resource.Properties.FunctionName ===
-          'TestApp-slack-workflow-notifier'
-      ) ?? [];
-
+    // Prepare
     expect(slackNotifierLogicalId).toBeDefined();
 
     // Assess - Verify this alarm invokes the Slack notifier Lambda
@@ -145,6 +143,50 @@ describe('log group cleaner stack', () => {
         },
       ],
     });
+  });
+
+  it('dead-letters each queue into its own DLQ', () => {
+    // Prepare - queues are looked up by name, logical IDs are synthesized
+    const queues = Object.entries(template.findResources('AWS::SQS::Queue'));
+    const logicalIdOf = (queueName: string) =>
+      queues.find(([, queue]) => queue.Properties.QueueName === queueName)?.[0];
+    const dlqOf = (queueName: string) =>
+      queues.find(([, queue]) => queue.Properties.QueueName === queueName)?.[1]
+        .Properties.RedrivePolicy?.deadLetterTargetArn['Fn::GetAtt']?.[0];
+
+    // Assess - mixing event payloads with deletion commands would make
+    // redrive send messages back to the wrong queue
+    expect(logicalIdOf('TestApp-deletion-dlq')).toBeDefined();
+    expect(logicalIdOf('TestApp-event-processing-dlq')).toBeDefined();
+    expect(dlqOf('TestApp-deletion-queue')).toBe(
+      logicalIdOf('TestApp-deletion-dlq')
+    );
+    expect(dlqOf('TestApp-event-processing-queue')).toBe(
+      logicalIdOf('TestApp-event-processing-dlq')
+    );
+    expect(dlqOf('TestApp-deletion-queue')).not.toBe(
+      dlqOf('TestApp-event-processing-queue')
+    );
+  });
+
+  it('alarms on both DLQs via the Slack notifier', () => {
+    // Prepare
+    expect(slackNotifierLogicalId).toBeDefined();
+
+    // Assess - each DLQ has its own alarm notifying Slack
+    for (const alarmName of [
+      'TestApp-DLQ-Messages',
+      'TestApp-EventQueue-DLQ-Messages',
+    ]) {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: alarmName,
+        AlarmActions: [
+          {
+            'Fn::GetAtt': [slackNotifierLogicalId, 'Arn'],
+          },
+        ],
+      });
+    }
   });
 });
 
