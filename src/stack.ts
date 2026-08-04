@@ -522,6 +522,36 @@ class LogGroupCleanerStack extends Stack {
     );
     ruleFailedInvocationsAlarm.addAlarmAction(alarmAction);
 
+    // Scheduler dropped invocations alarm - a schedule that cannot reach the
+    // deletion queue never produces a message, so no queue or DLQ metric moves
+    const schedulerDroppedDeliveriesAlarm = new Alarm(
+      this,
+      'scheduler-dropped-deliveries-alarm',
+      {
+        alarmName: `${appName}-Scheduler-DroppedDeliveries`,
+        alarmDescription:
+          'EventBridge Scheduler gave up delivering a deletion command: the failure happens before any message reaches the deletion queue, so it is invisible to the DLQ alarms and the log group is never deleted',
+        metric: new Metric({
+          namespace: 'AWS/Scheduler',
+          metricName: 'InvocationDroppedCount',
+          // Scheduler only dimensions these metrics by schedule group, and the
+          // deletion schedules are created without a group name, so they all
+          // land in `default`
+          dimensionsMap: {
+            ScheduleGroup: 'default',
+          },
+          period: Duration.minutes(5),
+          statistic: 'Sum',
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      }
+    );
+    schedulerDroppedDeliveriesAlarm.addAlarmAction(alarmAction);
+
     // Deletion DLQ alarm - any message in DLQ means permanent failure
     const dlqAlarm = new Alarm(this, 'dlq-alarm', {
       alarmName: `${appName}-DLQ-Messages`,
@@ -682,9 +712,19 @@ class LogGroupCleanerStack extends Stack {
   }
 
   /**
-   * Adds two DENY statements to a resource's policy:
+   * Adds three DENY statements to a resource's policy:
    *  - Deny non-TLS requests for specified actions (aws:SecureTransport = false)
-   *  - Deny cross-account requests for specified deny actions (aws:SourceAccount != this.account)
+   *  - Deny out-of-account IAM principals for the specified deny actions
+   *  - Deny cross-account service deliveries for the specified deny actions
+   *
+   * The cross-account deny is split in two because `aws:SourceAccount` is only
+   * populated for service-to-service calls, and negated condition operators
+   * match requests where the key is missing altogether. A lone
+   * `StringNotEquals: aws:SourceAccount` denies every IAM-principal call
+   * (including EventBridge Scheduler delivering through an assumed role);
+   * `aws:PrincipalIsAWSService` therefore gates that statement's counterpart
+   * to non-service callers, while a `Null` check gates the service-shaped deny
+   * to requests where `aws:SourceAccount` is present.
    *
    * @param options - options object
    * @param options.resource - object with addToResourcePolicy method (Queue or Topic)
@@ -713,15 +753,36 @@ class LogGroupCleanerStack extends Stack {
       })
     );
 
+    // Callers with an IAM principal: deny anything outside this account, and
+    // step aside for service principals, whose `aws:PrincipalAccount` is not
+    // this account (or absent) even when they act on our behalf
     resource.addToResourcePolicy(
       new PolicyStatement({
-        sid: 'DenyCrossAccount',
+        sid: 'DenyCrossAccountPrincipals',
+        effect: Effect.DENY,
+        principals: [new AnyPrincipal()],
+        actions: denyActions,
+        resources: ['*'],
+        conditions: {
+          StringNotEquals: { 'aws:PrincipalAccount': this.account },
+          Bool: { 'aws:PrincipalIsAWSService': 'false' },
+        },
+      })
+    );
+
+    // Service-to-service callers: deny them when they act for another account.
+    // The `Null` check keeps the statement from matching IAM-principal calls,
+    // which carry no `aws:SourceAccount` at all
+    resource.addToResourcePolicy(
+      new PolicyStatement({
+        sid: 'DenyCrossAccountServices',
         effect: Effect.DENY,
         principals: [new AnyPrincipal()],
         actions: denyActions,
         resources: ['*'],
         conditions: {
           StringNotEquals: { 'aws:SourceAccount': this.account },
+          Null: { 'aws:SourceAccount': 'false' },
         },
       })
     );

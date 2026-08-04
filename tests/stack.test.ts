@@ -196,6 +196,137 @@ describe('log group cleaner stack', () => {
     });
   });
 
+  // Queue policies point at their queue by logical ID, which is synthesized
+  const queuePolicyStatementsOf = (queueName: string) => {
+    const [queueLogicalId] =
+      Object.entries(template.findResources('AWS::SQS::Queue')).find(
+        ([, queue]) => queue.Properties.QueueName === queueName
+      ) ?? [];
+
+    return Object.values(template.findResources('AWS::SQS::QueuePolicy')).find(
+      (policy) =>
+        (policy.Properties.Queues as { Ref: string }[]).some(
+          ({ Ref }) => Ref === queueLogicalId
+        )
+    )?.Properties.PolicyDocument.Statement as
+      | Record<string, unknown>[]
+      | undefined;
+  };
+
+  const allQueueNames = [
+    'TestApp-deletion-queue',
+    'TestApp-deletion-dlq',
+    'TestApp-event-processing-queue',
+    'TestApp-event-processing-dlq',
+  ];
+
+  // `aws:SourceAccount` is only set for service-to-service calls, and a negated
+  // operator matches a request that lacks the key entirely. The principal deny
+  // is gated to non-service callers by `aws:PrincipalIsAWSService`; the service
+  // deny is gated by checking that `aws:SourceAccount` is present.
+  const requireTls = {
+    Sid: 'RequireTLS',
+    Effect: 'Deny',
+    Principal: { AWS: '*' },
+    Action: 'sqs:*',
+    Resource: '*',
+    Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+  };
+  const denyCrossAccountPrincipals = {
+    Sid: 'DenyCrossAccountPrincipals',
+    Effect: 'Deny',
+    Principal: { AWS: '*' },
+    Action: 'sqs:SendMessage',
+    Resource: '*',
+    Condition: {
+      StringNotEquals: { 'aws:PrincipalAccount': { Ref: 'AWS::AccountId' } },
+      Bool: { 'aws:PrincipalIsAWSService': 'false' },
+    },
+  };
+  const denyCrossAccountServices = {
+    Sid: 'DenyCrossAccountServices',
+    Effect: 'Deny',
+    Principal: { AWS: '*' },
+    Action: 'sqs:SendMessage',
+    Resource: '*',
+    Condition: {
+      StringNotEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } },
+      Null: { 'aws:SourceAccount': 'false' },
+    },
+  };
+
+  it('splits the deletion queue cross-account deny by caller shape', () => {
+    // Assess - a single deny on `aws:SourceAccount` would also catch every IAM
+    // principal, including the role EventBridge Scheduler delivers with
+    expect(queuePolicyStatementsOf('TestApp-deletion-queue')).toEqual([
+      requireTls,
+      denyCrossAccountPrincipals,
+      denyCrossAccountServices,
+    ]);
+  });
+
+  it('applies the TLS and both cross-account denies to every queue', () => {
+    // Assess - queues and DLQs alike stay closed to other accounts
+    for (const queueName of allQueueNames) {
+      expect(queuePolicyStatementsOf(queueName)).toEqual(
+        expect.arrayContaining([
+          requireTls,
+          denyCrossAccountPrincipals,
+          denyCrossAccountServices,
+        ])
+      );
+    }
+  });
+
+  it('never denies on a negated source account without checking it is set', () => {
+    // Prepare - the regression that silently dropped every scheduled deletion
+    const sourceAccountDenies = allQueueNames
+      .flatMap((queueName) => queuePolicyStatementsOf(queueName) ?? [])
+      .filter((statement) => {
+        const condition = statement.Condition as
+          | { StringNotEquals?: Record<string, unknown> }
+          | undefined;
+        return (
+          statement.Effect === 'Deny' &&
+          condition?.StringNotEquals?.['aws:SourceAccount'] !== undefined
+        );
+      });
+
+    // Assess - without the `Null` guard the statement also matches IAM
+    // principals, whose requests carry no `aws:SourceAccount` at all
+    expect(sourceAccountDenies).toHaveLength(allQueueNames.length);
+    for (const statement of sourceAccountDenies) {
+      expect(statement.Condition).toMatchObject({
+        Null: { 'aws:SourceAccount': 'false' },
+      });
+    }
+  });
+
+  it('alarms on dropped scheduler deliveries via the Slack notifier', () => {
+    // Prepare
+    expect(slackNotifierLogicalId).toBeDefined();
+
+    // Assess - dropped deliveries never reach a queue, so this is the only
+    // signal that a scheduled deletion was lost
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'TestApp-Scheduler-DroppedDeliveries',
+      Namespace: 'AWS/Scheduler',
+      MetricName: 'InvocationDroppedCount',
+      Dimensions: [{ Name: 'ScheduleGroup', Value: 'default' }],
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: [
+        {
+          'Fn::GetAtt': [slackNotifierLogicalId, 'Arn'],
+        },
+      ],
+    });
+  });
+
   it('dead-letters each queue into its own DLQ', () => {
     // Prepare - queues are looked up by name, logical IDs are synthesized
     const queues = Object.entries(template.findResources('AWS::SQS::Queue'));

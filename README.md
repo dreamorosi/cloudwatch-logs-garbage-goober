@@ -252,15 +252,16 @@ This architecture prevents the "thundering herd" scenario that can occur during 
 
 The stack includes CloudWatch Alarms that send Slack notifications:
 
-| Alarm                               | Trigger                   | Description                                                  |
-| ----------------------------------- | ------------------------- | ------------------------------------------------------------ |
-| `{appName}-Rule-FailedInvocations`  | >= 1 failed invocation    | EventBridge rule failed to deliver events to SQS             |
-| `{appName}-DLQ-Messages`            | >= 1 message in DLQ       | Permanent deletion failures requiring investigation          |
-| `{appName}-EventQueue-DLQ-Messages` | >= 1 message in DLQ       | Creation events that could not be scheduled for deletion     |
-| `{appName}-EventHandler-Errors`     | >= 1 error in 5 min       | Event handler Lambda errors                                  |
-| `{appName}-DeletionHandler-Errors`  | >= 1 error in 5 min       | Deletion handler Lambda errors                               |
-| `{appName}-EventQueue-Depth`        | >= 50 messages for 10 min | Event processing queue backlog                               |
-| `{appName}-EventQueue-MessageAge`   | >= 600 seconds for 10 min | Event processing delays (on top of the 5 min delivery delay) |
+| Alarm                                   | Trigger                   | Description                                                        |
+| --------------------------------------- | ------------------------- | ------------------------------------------------------------------ |
+| `{appName}-Rule-FailedInvocations`      | >= 1 failed invocation    | EventBridge rule failed to deliver events to SQS                   |
+| `{appName}-Scheduler-DroppedDeliveries` | >= 1 dropped invocation   | Deletion command dropped before reaching the queue, unseen by DLQs |
+| `{appName}-DLQ-Messages`                | >= 1 message in DLQ       | Permanent deletion failures requiring investigation                |
+| `{appName}-EventQueue-DLQ-Messages`     | >= 1 message in DLQ       | Creation events that could not be scheduled for deletion           |
+| `{appName}-EventHandler-Errors`         | >= 1 error in 5 min       | Event handler Lambda errors                                        |
+| `{appName}-DeletionHandler-Errors`      | >= 1 error in 5 min       | Deletion handler Lambda errors                                     |
+| `{appName}-EventQueue-Depth`            | >= 50 messages for 10 min | Event processing queue backlog                                     |
+| `{appName}-EventQueue-MessageAge`       | >= 600 seconds for 10 min | Event processing delays (on top of the 5 min delivery delay)       |
 
 ### Slack Payload Format
 
