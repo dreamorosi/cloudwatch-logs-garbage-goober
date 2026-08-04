@@ -16,6 +16,12 @@ import { logger } from './logger.js';
 
 const DeletionMessageSchema = z.object({
   logGroupName: z.string(),
+  /**
+   * Region the log group lives in. Always the region this stack is deployed to,
+   * since events are only ever captured there, and carried in the message so
+   * that the deletion targets the region the schedule was created for rather
+   * than whichever region the handler happens to run in.
+   */
   awsRegion: z.string(),
   /**
    * Creation time (epoch ms) of the log group incarnation this deletion was

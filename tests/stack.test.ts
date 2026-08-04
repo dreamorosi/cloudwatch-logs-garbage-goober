@@ -40,6 +40,56 @@ describe('log group cleaner stack', () => {
         resource.Properties.FunctionName === 'TestApp-slack-workflow-notifier'
     ) ?? [];
 
+  // Every log group in the deployment region, and none outside of it
+  const stackRegionLogGroups = {
+    'Fn::Join': [
+      '',
+      [
+        'arn:',
+        { Ref: 'AWS::Partition' },
+        ':logs:',
+        { Ref: 'AWS::Region' },
+        ':',
+        { Ref: 'AWS::AccountId' },
+        ':log-group:*',
+      ],
+    ],
+  };
+
+  it('lets the event handler look up log groups in the deployment region', () => {
+    // Assess - log group names are only known at runtime, the region is not
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: 'logs:DescribeLogGroups',
+            Resource: stackRegionLogGroups,
+          }),
+        ]),
+      }),
+    });
+  });
+
+  it('never grants log group access outside the deployment region', () => {
+    // Prepare - CloudTrail only delivers CreateLogGroup events to the region
+    // the call was made in, so log groups elsewhere are never even observed
+    const logStatements = Object.values(
+      template.findResources('AWS::IAM::Policy')
+    ).flatMap((policy) =>
+      (
+        policy.Properties.PolicyDocument.Statement as { Action: unknown }[]
+      ).filter((statement) =>
+        JSON.stringify(statement.Action).includes('logs:')
+      )
+    );
+
+    // Assess - a wildcard region would suggest reach the stack does not have
+    expect(logStatements.length).toBeGreaterThan(0);
+    for (const statement of logStatements) {
+      expect(statement).toMatchObject({ Resource: stackRegionLogGroups });
+    }
+  });
+
   it('delays event processing so that retention policies have time to be applied', () => {
     // Assess - CreateLogGroup is recorded before PutRetentionPolicy is called
     template.hasResourceProperties('AWS::SQS::Queue', {
@@ -76,6 +126,7 @@ describe('log group cleaner stack', () => {
         Statement: Match.arrayWith([
           Match.objectLike({
             Action: ['logs:DeleteLogGroup', 'logs:DescribeLogGroups'],
+            Resource: stackRegionLogGroups,
           }),
         ]),
       }),
