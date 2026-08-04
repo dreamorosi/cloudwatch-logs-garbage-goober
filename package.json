@@ -21,7 +21,7 @@
     "node": ">=22.18.0"
   },
   "lint-staged": {
-    "*.{ts,js}": "biome check --write"
+    "*.{ts,js,json,jsonc}": "biome check --write --no-errors-on-unmatched"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
