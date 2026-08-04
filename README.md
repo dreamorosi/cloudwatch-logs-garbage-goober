@@ -86,14 +86,24 @@ Then edit `config.json` with your settings:
 | ----------------------- | -------------------------------------------------------------- | --------------------------------------- |
 | `appName`               | Prefix for all AWS resource names of this service              | `CWLogsGarbageGoober`                   |
 | `logGroupPatterns`      | Log group name prefixes to match                               | Powertools e2e patterns                 |
-| `requiredTags`          | Tags that must be present on CreateLogGroup event              | `Service: Powertools-for-AWS-e2e-tests` |
+| `requiredTags`          | Tags required at creation (see [below](#tag-filtering-caveat))  | `Service: Powertools-for-AWS-e2e-tests` |
 | `deletionDelayDays`     | Days to wait after retention period before deleting            | `1`                                     |
 | `fallbackRetentionDays` | Retention assumed for log groups that never expire (see below) | `7`                                     |
 | `slackWebhookParameter` | SSM parameter name containing Slack workflow webhook URL       | `/slack-cloudwatch-alerts-webhook-url`  |
 
+### Tag Filtering Caveat
+
+`requiredTags` filters the tags recorded in the CloudTrail `CreateLogGroup` event. Only tags passed
+in that API call can match; adding required tags later does not trigger another match, so the log
+group is never scheduled for cleanup.
+
+- **Matched:** CloudFormation/CDK-created log groups when the required tags are passed at creation
+- **Not matched:** Lambda-service log groups created automatically without tags, even if tagged later
+- **Not matched:** `aws logs create-log-group` followed by `aws logs tag-resource`
+
 ### CDK Context Overrides
 
-You can override any config option at deploy time using CDK context:
+You can override any config option at deploy time using CDK context. The [`requiredTags` creation-time limitation](#tag-filtering-caveat) also applies to context overrides.
 
 ```bash
 # Override app name
