@@ -75,6 +75,35 @@ describe('log group cleaner stack', () => {
     });
   });
 
+  it('grants the notifier read-only access to the webhook parameter', () => {
+    // Assess - no kms:Decrypt, since it is ineffective on a parameter ARN, and
+    // the partition is derived instead of hardcoded
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          {
+            Action: 'ssm:GetParameter',
+            Effect: 'Allow',
+            Resource: {
+              'Fn::Join': [
+                '',
+                [
+                  'arn:',
+                  { Ref: 'AWS::Partition' },
+                  ':ssm:',
+                  { Ref: 'AWS::Region' },
+                  ':',
+                  { Ref: 'AWS::AccountId' },
+                  ':parameter/test-webhook-url',
+                ],
+              ],
+            },
+          },
+        ]),
+      }),
+    });
+  });
+
   it('does not grant the CloudWatch service principal invoke access', () => {
     // Assess - alarms never invoke Lambda as cloudwatch.amazonaws.com
     template.resourcePropertiesCountIs(

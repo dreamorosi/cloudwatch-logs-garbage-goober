@@ -364,12 +364,27 @@ class LogGroupCleanerStack extends Stack {
     });
 
     // Grant SSM parameter read permissions
+    //
+    // The parameter is expected to be encrypted with the AWS-managed `aws/ssm`
+    // key, which grants decryption to callers allowed to read the parameter.
+    // A customer managed key would additionally need `kms:Decrypt` on the key
+    // ARN, which cannot be expressed against the parameter ARN below
     slackNotifier.addToRolePolicy(
       new PolicyStatement({
         effect: Effect.ALLOW,
-        actions: ['ssm:GetParameter', 'kms:Decrypt'],
+        actions: ['ssm:GetParameter'],
         resources: [
-          `arn:aws:ssm:${this.region}:${this.account}:parameter${slackWebhookParameter}`,
+          Arn.format(
+            {
+              service: 'ssm',
+              resource: 'parameter',
+              // Parameter names are configured with a leading slash, which the
+              // ARN format already adds as the resource separator
+              resourceName: slackWebhookParameter.replace(/^\//, ''),
+              arnFormat: ArnFormat.SLASH_RESOURCE_NAME,
+            },
+            this
+          ),
         ],
       })
     );

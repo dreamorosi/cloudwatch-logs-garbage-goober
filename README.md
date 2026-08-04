@@ -91,6 +91,10 @@ Then edit `config.json` with your settings:
 | `fallbackRetentionDays` | Retention assumed for log groups that never expire (see below) | `7`                                     |
 | `slackWebhookParameter` | SSM parameter name containing Slack workflow webhook URL       | `/slack-cloudwatch-alerts-webhook-url`  |
 
+> **Note:** the webhook parameter is expected to be encrypted with the AWS-managed `aws/ssm` key,
+> which needs no extra permissions to decrypt. If you encrypt it with a customer managed key, the
+> stack must also grant the notifier function `kms:Decrypt` on that key ARN.
+
 ### Tag Filtering Caveat
 
 `requiredTags` filters the tags recorded in the CloudTrail `CreateLogGroup` event. Only tags passed
