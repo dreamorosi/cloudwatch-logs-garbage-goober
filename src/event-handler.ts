@@ -14,7 +14,6 @@ import {
 import { parse } from '@aws-lambda-powertools/parser';
 import { EventBridgeEnvelope } from '@aws-lambda-powertools/parser/envelopes';
 import type { EventBridgeEvent } from '@aws-lambda-powertools/parser/types';
-import { DescribeLogGroupsCommand } from '@aws-sdk/client-cloudwatch-logs';
 import {
   ActionAfterCompletion,
   CreateScheduleCommand,
@@ -24,7 +23,7 @@ import {
 import type { Context, SQSHandler, SQSRecord } from 'aws-lambda';
 import { Temporal } from 'temporal-polyfill';
 import { z } from 'zod';
-import { getRegionalCwClient } from './cloudwatch.js';
+import { findLogGroupByName } from './cloudwatch.js';
 import { logger } from './logger.js';
 
 const schedulerClient = new SchedulerClient({
@@ -56,35 +55,6 @@ const deletionDelayDays = getNumberFromEnv({ key: 'DELETION_DELAY_DAYS' });
 const fallbackRetentionDays = getNumberFromEnv({
   key: 'FALLBACK_RETENTION_DAYS',
 });
-
-/**
- * Fetch log group info for the given log group name
- *
- * @param param - options object
- * @param param.region - AWS region where the log group is located
- * @param param.logGroupName - Name of the log group to fetch info for
- */
-const fetchLogGroupInfo = async ({
-  region,
-  logGroupName,
-}: {
-  region: string;
-  logGroupName: string;
-}) => {
-  const cwClient = getRegionalCwClient(region);
-
-  const response = await cwClient.send(
-    new DescribeLogGroupsCommand({
-      logGroupNamePrefix: logGroupName,
-    })
-  );
-  logger.debug('Log group info', { response: response.logGroups || [] });
-
-  const logGroup = response.logGroups?.find(
-    (lg) => lg.logGroupName === logGroupName
-  );
-  return logGroup;
-};
 
 /**
  * Create an Amazon EventBridge Scheduler schedule to delete the log group
@@ -162,7 +132,7 @@ const recordHandler = async ({
     messageId,
   });
 
-  const logGroup = await fetchLogGroupInfo({
+  const logGroup = await findLogGroupByName({
     region: awsRegion,
     logGroupName,
   });

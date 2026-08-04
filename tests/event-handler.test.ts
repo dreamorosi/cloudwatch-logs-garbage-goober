@@ -289,6 +289,72 @@ describe('cw-logs-event-handler', () => {
     });
   });
 
+  it('finds the log group when the exact match is on a later page', async () => {
+    // Prepare - more log groups share the prefix than fit in a single
+    // `DescribeLogGroups` page, and the exact match is on the second one
+    cwClient
+      .on(DescribeLogGroupsCommand)
+      .resolvesOnce({
+        logGroups: [
+          {
+            logGroupName:
+              '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures-Extra',
+            retentionInDays: 30,
+          },
+        ],
+        nextToken: 'page-2',
+      })
+      .resolvesOnce({
+        logGroups: [
+          {
+            logGroupName:
+              '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+            retentionInDays: 7,
+          },
+        ],
+      });
+    schedulerClient.on(CreateScheduleCommand).resolves({
+      ScheduleArn:
+        'arn:aws:scheduler:eu-west-1:123456789023:schedule/default/DeleteLogGroup-test',
+    });
+
+    // Act
+    const result = await invokeHandler(sqsEvent);
+
+    // Assess - the exact match from the second page is used (7 days retention)
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(cwClient.commandCalls(DescribeLogGroupsCommand)).toHaveLength(2);
+    expect(schedulerClient).toReceiveCommandWith(CreateScheduleCommand, {
+      ScheduleExpression: 'at(2024-10-18T13:26:07)',
+    });
+  });
+
+  it('stops paginating as soon as the exact match is found', async () => {
+    // Prepare - the first page contains the exact match, but more pages exist
+    cwClient.on(DescribeLogGroupsCommand).resolves({
+      logGroups: [
+        {
+          logGroupName:
+            '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures',
+          retentionInDays: 7,
+        },
+      ],
+      nextToken: 'page-2',
+    });
+    schedulerClient.on(CreateScheduleCommand).resolves({
+      ScheduleArn:
+        'arn:aws:scheduler:eu-west-1:123456789023:schedule/default/DeleteLogGroup-test',
+    });
+
+    // Act
+    const result = await invokeHandler(sqsEvent);
+
+    // Assess
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(cwClient.commandCalls(DescribeLogGroupsCommand)).toHaveLength(1);
+    expect(schedulerClient.commandCalls(CreateScheduleCommand)).toHaveLength(1);
+  });
+
   it('skips scheduling when exact match not found even if prefix matches exist', async () => {
     // Prepare - return log groups that match prefix but not exact name
     cwClient.on(DescribeLogGroupsCommand).resolves({
@@ -308,5 +374,39 @@ describe('cw-logs-event-handler', () => {
     // Assess
     expect(result.batchItemFailures).toHaveLength(0);
     expect(schedulerClient.commandCalls(CreateScheduleCommand)).toHaveLength(0);
+  });
+
+  it('skips scheduling when the exact match is missing from every page', async () => {
+    // Prepare - several pages of prefix matches, none of them the exact name
+    cwClient
+      .on(DescribeLogGroupsCommand)
+      .resolvesOnce({
+        logGroups: [
+          {
+            logGroupName:
+              '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures-Extra',
+          },
+        ],
+        nextToken: 'page-2',
+      })
+      .resolvesOnce({
+        logGroups: [
+          {
+            logGroupName:
+              '/aws/lambda/Logger-20-x86-132f7-Basic-Middy-BasicFeatures-Other',
+          },
+        ],
+      });
+
+    // Act
+    const result = await invokeHandler(sqsEvent);
+
+    // Assess
+    expect(result.batchItemFailures).toHaveLength(0);
+    expect(cwClient.commandCalls(DescribeLogGroupsCommand)).toHaveLength(2);
+    expect(schedulerClient.commandCalls(CreateScheduleCommand)).toHaveLength(0);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Log group not found, skipping schedule creation')
+    );
   });
 });
