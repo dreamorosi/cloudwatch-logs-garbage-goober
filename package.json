@@ -48,7 +48,7 @@
     "@aws-sdk/client-cloudwatch-logs": "^3.1101.0",
     "@aws-sdk/client-scheduler": "^3.1101.0",
     "@aws-sdk/client-ssm": "^3.1101.0",
-    "aws-cdk-lib": "2.262.2",
+    "aws-cdk-lib": "2.263.0",
     "constructs": "^10.7.2",
     "source-map-support": "^0.5.21",
     "temporal-polyfill": "^1.0.1",
