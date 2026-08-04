@@ -107,7 +107,7 @@ group is never scheduled for cleanup.
 
 ### CDK Context Overrides
 
-You can override any config option at deploy time using CDK context. The [`requiredTags` creation-time limitation](#tag-filtering-caveat) also applies to context overrides.
+You can override any config option at deploy time using CDK context. CLI context values arrive as strings, so array and object options must use valid JSON syntax as shown below; malformed values fail synthesis. The [`requiredTags` creation-time limitation](#tag-filtering-caveat) also applies to context overrides.
 
 ```bash
 # Override app name

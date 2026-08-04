@@ -49,6 +49,74 @@ import type { AppConfig } from './types.js';
  */
 const DEFAULT_FALLBACK_RETENTION_DAYS = 7;
 
+const invalidConfig = (key: keyof AppConfig, expectation: string) =>
+  new Error(`Invalid configuration "${key}": ${expectation}`);
+
+const parseJsonOverride = (
+  key: 'logGroupPatterns' | 'requiredTags',
+  value: unknown,
+  expectation: string
+): unknown => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw invalidConfig(key, expectation);
+  }
+};
+
+const parseLogGroupPatterns = (value: unknown): string[] => {
+  const expectation =
+    'expected a JSON array of strings, for example `-c logGroupPatterns=\'["/aws/lambda/Foo-"]\'`';
+  const parsed = parseJsonOverride('logGroupPatterns', value, expectation);
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some((pattern) => typeof pattern !== 'string')
+  ) {
+    throw invalidConfig('logGroupPatterns', expectation);
+  }
+  return parsed;
+};
+
+const parseRequiredTags = (value: unknown): Record<string, string> => {
+  const expectation =
+    'expected a JSON object with string values, for example `-c requiredTags=\'{"Environment":"staging"}\'`';
+  const parsed = parseJsonOverride('requiredTags', value, expectation);
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    Object.values(parsed).some((tag) => typeof tag !== 'string')
+  ) {
+    throw invalidConfig('requiredTags', expectation);
+  }
+  return parsed as Record<string, string>;
+};
+
+const parseNumber = (
+  key: 'deletionDelayDays' | 'fallbackRetentionDays',
+  value: unknown
+): number => {
+  const parsed = typeof value === 'string' ? Number(value) : value;
+  if (typeof parsed !== 'number' || Number.isNaN(parsed)) {
+    throw invalidConfig(key, `expected a number, for example \`-c ${key}=7\``);
+  }
+  return parsed;
+};
+
+const parseString = (
+  key: 'appName' | 'slackWebhookParameter',
+  value: unknown
+): string => {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw invalidConfig(key, 'expected a non-empty string');
+  }
+  return value;
+};
+
 /**
  * Merge the configuration from config.json with CDK context overrides
  *
@@ -56,24 +124,27 @@ const DEFAULT_FALLBACK_RETENTION_DAYS = 7;
  * @param fileConfig - configuration as read from config.json
  */
 const loadConfig = (app: App, fileConfig: AppConfig): AppConfig => {
+  const valueFor = <Key extends keyof AppConfig>(key: Key): unknown =>
+    app.node.tryGetContext(key) ?? fileConfig[key];
+
   return {
-    appName: app.node.tryGetContext('appName') ?? fileConfig.appName,
-    logGroupPatterns:
-      app.node.tryGetContext('logGroupPatterns') ?? fileConfig.logGroupPatterns,
-    requiredTags:
-      app.node.tryGetContext('requiredTags') ?? fileConfig.requiredTags,
-    deletionDelayDays:
-      app.node.tryGetContext('deletionDelayDays') ??
-      fileConfig.deletionDelayDays,
+    appName: parseString('appName', valueFor('appName')),
+    logGroupPatterns: parseLogGroupPatterns(valueFor('logGroupPatterns')),
+    requiredTags: parseRequiredTags(valueFor('requiredTags')),
+    deletionDelayDays: parseNumber(
+      'deletionDelayDays',
+      valueFor('deletionDelayDays')
+    ),
     // Fall back to a sensible default so that config files predating this
     // option never end up passing `undefined` down to the event handler
-    fallbackRetentionDays:
-      app.node.tryGetContext('fallbackRetentionDays') ??
-      fileConfig.fallbackRetentionDays ??
-      DEFAULT_FALLBACK_RETENTION_DAYS,
-    slackWebhookParameter:
-      app.node.tryGetContext('slackWebhookParameter') ??
-      fileConfig.slackWebhookParameter,
+    fallbackRetentionDays: parseNumber(
+      'fallbackRetentionDays',
+      valueFor('fallbackRetentionDays') ?? DEFAULT_FALLBACK_RETENTION_DAYS
+    ),
+    slackWebhookParameter: parseString(
+      'slackWebhookParameter',
+      valueFor('slackWebhookParameter')
+    ),
   };
 };
 
