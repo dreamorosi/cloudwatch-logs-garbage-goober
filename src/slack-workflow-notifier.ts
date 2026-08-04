@@ -1,12 +1,17 @@
-import { getParameter } from '@aws-lambda-powertools/parameters/ssm';
+import { getStringFromEnv } from '@aws-lambda-powertools/commons/utils/env';
 import { Logger } from '@aws-lambda-powertools/logger';
+import { getParameter } from '@aws-lambda-powertools/parameters/ssm';
 import type { Context } from 'aws-lambda';
 import {
-  CloudWatchAlarmEventSchema,
   type CloudWatchAlarmEvent,
+  CloudWatchAlarmEventSchema,
 } from './schemas/cloudwatch-alarm.js';
 
 const logger = new Logger({ serviceName: 'slack-workflow-notifier' });
+const slackWebhookParamName = getStringFromEnv({
+  key: 'SLACK_WEBHOOK_PARAM_NAME',
+});
+const appName = getStringFromEnv({ key: 'APP_NAME' });
 
 // Worst case: 4 attempts (1 initial + 3 retries) x 4s timeout = 16s, plus
 // 1s + 2s + 4s backoff = 7s; 23s total, within the 30s Lambda timeout.
@@ -41,7 +46,7 @@ export const handler = async (
   }
 
   // Fetch webhook URL (cached by Parameters utility)
-  const webhookUrl = await getParameter(process.env.SLACK_WEBHOOK_PARAM_NAME!, {
+  const webhookUrl = await getParameter(slackWebhookParamName, {
     decrypt: true,
     maxAge: 300,
   });
@@ -62,7 +67,7 @@ export const handler = async (
     cloudWatchUrl: buildCloudWatchUrl(parsedEvent.alarmArn),
     region: parsedEvent.region,
     alarmTime: formatTimestamp(parsedEvent.alarmData.state.timestamp),
-    appName: process.env.APP_NAME!,
+    appName,
   };
 
   await sendWithRetry(payload, webhookUrl);
@@ -115,7 +120,7 @@ async function sendWithRetry(
         throw error;
       }
 
-      const backoffMs = Math.pow(2, attempt) * 1000;
+      const backoffMs = 2 ** attempt * 1000;
       logger.warn('Retrying', { attempt: attempt + 1, backoffMs });
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
     }

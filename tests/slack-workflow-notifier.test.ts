@@ -11,9 +11,11 @@ vi.mock('@aws-lambda-powertools/parameters/ssm', () => ({
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
-// Mock environment variables
-process.env.SLACK_WEBHOOK_PARAM_NAME = '/slack-webhook-url';
-process.env.APP_NAME = 'TestApp';
+// Set environment variables before the notifier is imported
+vi.hoisted(() => {
+  process.env.SLACK_WEBHOOK_PARAM_NAME = '/slack-webhook-url';
+  process.env.APP_NAME = 'TestApp';
+});
 
 describe('Slack Workflow Notifier', () => {
   const mockContext: Context = {
