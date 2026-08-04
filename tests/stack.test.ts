@@ -221,9 +221,11 @@ describe('log group cleaner stack', () => {
   ];
 
   // `aws:SourceAccount` is only set for service-to-service calls, and a negated
-  // operator matches a request that lacks the key entirely. The principal deny
-  // is gated to non-service callers by `aws:PrincipalIsAWSService`; the service
-  // deny is gated by checking that `aws:SourceAccount` is present.
+  // operator matches a request that lacks the key entirely, so the deny is
+  // principal-shaped only: it is written against `aws:PrincipalAccount` and
+  // gated to non-service callers by `aws:PrincipalIsAWSService`. Service
+  // callers are kept in-account by positively scoped allows instead, because
+  // SQS refuses the `Null` operator that a service-shaped deny would need.
   const requireTls = {
     Sid: 'RequireTLS',
     Effect: 'Deny',
@@ -243,62 +245,106 @@ describe('log group cleaner stack', () => {
       Bool: { 'aws:PrincipalIsAWSService': 'false' },
     },
   };
-  const denyCrossAccountServices = {
-    Sid: 'DenyCrossAccountServices',
-    Effect: 'Deny',
-    Principal: { AWS: '*' },
-    Action: 'sqs:SendMessage',
-    Resource: '*',
-    Condition: {
-      StringNotEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } },
-      Null: { 'aws:SourceAccount': 'false' },
-    },
-  };
 
-  it('splits the deletion queue cross-account deny by caller shape', () => {
-    // Assess - a single deny on `aws:SourceAccount` would also catch every IAM
-    // principal, including the role EventBridge Scheduler delivers with
+  it('denies the deletion queue to other accounts by principal, not by source account', () => {
+    // Assess - a deny on `aws:SourceAccount` would also catch every IAM
+    // principal, including the role EventBridge Scheduler delivers with, and
+    // the `Null` guard that would fence it off is rejected by SQS
     expect(queuePolicyStatementsOf('TestApp-deletion-queue')).toEqual([
       requireTls,
       denyCrossAccountPrincipals,
-      denyCrossAccountServices,
     ]);
   });
 
-  it('applies the TLS and both cross-account denies to every queue', () => {
+  it('applies the TLS and principal cross-account denies to every queue', () => {
     // Assess - queues and DLQs alike stay closed to other accounts
     for (const queueName of allQueueNames) {
       expect(queuePolicyStatementsOf(queueName)).toEqual(
-        expect.arrayContaining([
-          requireTls,
-          denyCrossAccountPrincipals,
-          denyCrossAccountServices,
-        ])
+        expect.arrayContaining([requireTls, denyCrossAccountPrincipals])
       );
     }
   });
 
-  it('never denies on a negated source account without checking it is set', () => {
-    // Prepare - the regression that silently dropped every scheduled deletion
+  it('never denies on a source account, which SQS cannot fence off', () => {
+    // Prepare - a `StringNotEquals: aws:SourceAccount` deny matches every IAM
+    // principal, and the `Null` guard SQS rejects is the only way to gate it
     const sourceAccountDenies = allQueueNames
       .flatMap((queueName) => queuePolicyStatementsOf(queueName) ?? [])
-      .filter((statement) => {
-        const condition = statement.Condition as
-          | { StringNotEquals?: Record<string, unknown> }
-          | undefined;
-        return (
+      .filter(
+        (statement) =>
           statement.Effect === 'Deny' &&
-          condition?.StringNotEquals?.['aws:SourceAccount'] !== undefined
-        );
-      });
+          JSON.stringify(statement.Condition ?? {}).includes(
+            'aws:SourceAccount'
+          )
+      );
 
-    // Assess - without the `Null` guard the statement also matches IAM
-    // principals, whose requests carry no `aws:SourceAccount` at all
-    expect(sourceAccountDenies).toHaveLength(allQueueNames.length);
-    for (const statement of sourceAccountDenies) {
-      expect(statement.Condition).toMatchObject({
-        Null: { 'aws:SourceAccount': 'false' },
-      });
+    // Assess - the regression that silently dropped every scheduled deletion,
+    // and the guard whose rejection rolled the deployment back
+    expect(sourceAccountDenies).toEqual([]);
+  });
+
+  it('never uses the Null operator, which SQS rejects on aws:SourceAccount', () => {
+    // Prepare - the queue policy that failed to deploy carried
+    // `Null: { 'aws:SourceAccount': 'false' }`
+    const statementsWithNull = allQueueNames
+      .flatMap((queueName) => queuePolicyStatementsOf(queueName) ?? [])
+      .filter(
+        (statement) =>
+          (statement.Condition as Record<string, unknown> | undefined)?.Null !==
+          undefined
+      );
+
+    // Assess
+    expect(statementsWithNull).toEqual([]);
+  });
+
+  it('scopes the EventBridge allow to deliveries made for this account', () => {
+    // Prepare
+    const allowEventBridge = queuePolicyStatementsOf(
+      'TestApp-event-processing-queue'
+    )?.find((statement) => statement.Sid === 'AllowEventBridge');
+
+    // Assess - this positive condition is what denies cross-account service
+    // traffic, since a missing `aws:SourceAccount` matches no allow at all
+    expect(allowEventBridge).toEqual({
+      Sid: 'AllowEventBridge',
+      Effect: 'Allow',
+      Principal: { Service: 'events.amazonaws.com' },
+      Action: 'sqs:SendMessage',
+      Resource: { 'Fn::GetAtt': [expect.any(String), 'Arn'] },
+      Condition: {
+        StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } },
+      },
+    });
+  });
+
+  it('never allows a service principal without scoping it to this account', () => {
+    // Prepare - every allow for a service principal on any queue, including the
+    // one the CDK adds for the rule target
+    const serviceAllows = allQueueNames
+      .flatMap((queueName) => queuePolicyStatementsOf(queueName) ?? [])
+      .filter(
+        (statement) =>
+          statement.Effect === 'Allow' &&
+          (statement.Principal as { Service?: unknown } | undefined)
+            ?.Service !== undefined
+      );
+
+    // Assess - either scoped by source account, or by the ARN of an in-stack
+    // resource, which belongs to this account by construction
+    expect(serviceAllows.length).toBeGreaterThan(0);
+    for (const statement of serviceAllows) {
+      const condition = (statement.Condition ?? {}) as {
+        StringEquals?: Record<string, unknown>;
+        ArnEquals?: Record<string, unknown>;
+      };
+      const scopedByAccount =
+        condition.StringEquals?.['aws:SourceAccount'] !== undefined;
+      const scopedByStackArn = JSON.stringify(
+        condition.ArnEquals?.['aws:SourceArn'] ?? null
+      ).includes('Fn::GetAtt');
+
+      expect(scopedByAccount || scopedByStackArn).toBe(true);
     }
   });
 
