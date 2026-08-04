@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs';
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
-import type { AppConfig } from '../src/types.js';
 import {
   DEFAULT_FALLBACK_RETENTION_DAYS,
   LogGroupCleanerStack,
   loadConfig,
 } from '../src/stack.js';
+import type { AppConfig } from '../src/types.js';
 
 // Synthesize with the same feature flags the CDK CLI would pick up, so that the
 // template matches what is actually deployed
@@ -191,6 +191,11 @@ describe('log group cleaner stack', () => {
 });
 
 describe('loadConfig', () => {
+  const synthWithConfig = (app: App, stackConfig: AppConfig) =>
+    Template.fromStack(
+      new LogGroupCleanerStack(app, stackConfig.appName, stackConfig)
+    ).toJSON();
+
   it('overrides the file configuration with CDK context', () => {
     // Prepare
     const app = new App({
@@ -214,5 +219,59 @@ describe('loadConfig', () => {
     // Assess
     expect(result.fallbackRetentionDays).toBe(DEFAULT_FALLBACK_RETENTION_DAYS);
     expect(result.fallbackRetentionDays).toBe(7);
+  });
+
+  it('synthesizes JSON string collection overrides like equivalent object config', () => {
+    // Prepare
+    const overrideApp = new App({
+      context: {
+        ...cdkContext,
+        logGroupPatterns: '["/aws/lambda/Override-", "/custom/logs/"]',
+        requiredTags: '{"Environment":"staging","Team":"platform"}',
+      },
+    });
+    const equivalentConfig: AppConfig = {
+      ...config,
+      logGroupPatterns: ['/aws/lambda/Override-', '/custom/logs/'],
+      requiredTags: { Environment: 'staging', Team: 'platform' },
+    };
+
+    // Act
+    const overriddenConfig = loadConfig(overrideApp, config);
+
+    // Assess
+    expect(synthWithConfig(overrideApp, overriddenConfig)).toEqual(
+      synthWithConfig(new App({ context: cdkContext }), equivalentConfig)
+    );
+  });
+
+  it('rejects malformed JSON with an actionable error', () => {
+    const app = new App({ context: { logGroupPatterns: '["unterminated"' } });
+
+    expect(() => loadConfig(app, config)).toThrowError(
+      /logGroupPatterns.*expected a JSON array of strings.*-c logGroupPatterns=/
+    );
+  });
+
+  it('rejects collection overrides with the wrong shape', () => {
+    const app = new App({ context: { logGroupPatterns: '[1, 2]' } });
+
+    expect(() => loadConfig(app, config)).toThrowError(
+      /logGroupPatterns.*expected a JSON array of strings/
+    );
+  });
+
+  it('parses numeric string overrides', () => {
+    const app = new App({ context: { deletionDelayDays: '14' } });
+
+    expect(loadConfig(app, config).deletionDelayDays).toBe(14);
+  });
+
+  it('rejects NaN number overrides', () => {
+    const app = new App({ context: { deletionDelayDays: 'NaN' } });
+
+    expect(() => loadConfig(app, config)).toThrowError(
+      /deletionDelayDays.*expected a number.*-c deletionDelayDays=7/
+    );
   });
 });
