@@ -164,6 +164,61 @@ describe('deletion-handler', () => {
     expect(cwClient.commandCalls(DeleteLogGroupCommand)).toHaveLength(0);
   });
 
+  it('deletes the log group when the exact match is on a later page', async () => {
+    // Prepare - more log groups share the prefix than fit in a single
+    // `DescribeLogGroups` page, and the exact match is on the second one
+    cwClient
+      .on(DescribeLogGroupsCommand)
+      .resolvesOnce({
+        logGroups: [
+          { logGroupName: `${logGroupName}-extra`, creationTime: 1_000 },
+        ],
+        nextToken: 'page-2',
+      })
+      .resolvesOnce({
+        logGroups: [{ logGroupName, creationTime: 1_700_000_000_000 }],
+      });
+    cwClient.on(DeleteLogGroupCommand).resolves({});
+
+    // Act
+    const result = await handler(event, context, () => {});
+
+    // Assess
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(cwClient.commandCalls(DescribeLogGroupsCommand)).toHaveLength(2);
+    expect(cwClient).toReceiveCommandWith(DeleteLogGroupCommand, {
+      logGroupName,
+    });
+  });
+
+  it('treats an exact match missing from every page as success (idempotent)', async () => {
+    // Prepare - several pages of prefix matches, none of them the exact name
+    cwClient
+      .on(DescribeLogGroupsCommand)
+      .resolvesOnce({
+        logGroups: [
+          { logGroupName: `${logGroupName}-extra`, creationTime: 1_000 },
+        ],
+        nextToken: 'page-2',
+      })
+      .resolvesOnce({
+        logGroups: [
+          { logGroupName: `${logGroupName}-other`, creationTime: 1_000 },
+        ],
+      });
+
+    // Act
+    const result = await handler(event, context, () => {});
+
+    // Assess
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(cwClient.commandCalls(DescribeLogGroupsCommand)).toHaveLength(2);
+    expect(cwClient.commandCalls(DeleteLogGroupCommand)).toHaveLength(0);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Log group already deleted')
+    );
+  });
+
   it('treats ResourceNotFoundException as success (idempotent)', async () => {
     // Prepare - the log group is deleted between the lookup and the deletion
     mockLiveLogGroup(1_700_000_000_000);
