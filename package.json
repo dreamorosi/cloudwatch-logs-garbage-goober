@@ -5,6 +5,7 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest",
+    "test:coverage": "vitest run --coverage",
     "cdk": "cdk",
     "lint:fix": "biome check --write",
     "lint": "biome lint"
