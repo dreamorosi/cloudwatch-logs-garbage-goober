@@ -8,7 +8,8 @@
     "test:coverage": "vitest run --coverage",
     "cdk": "cdk",
     "lint:fix": "biome check --write",
-    "lint": "biome lint"
+    "lint": "biome lint",
+    "prepare": "husky"
   },
   "type": "module",
   "author": {
@@ -20,7 +21,7 @@
     "node": ">=22.18.0"
   },
   "lint-staged": {
-    "*.{ts,js}": "biome check --write"
+    "*.{ts,js,json,jsonc}": "biome check --write --no-errors-on-unmatched"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
@@ -33,6 +34,8 @@
     "aws-sdk-client-mock-vitest": "^7.1.0",
     "cdk-nag": "^2.37.55",
     "esbuild": "^0.28.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "typescript": "~7.0.2",
     "vitest": "^4.0.16"
   },
