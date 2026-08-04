@@ -300,6 +300,31 @@ describe('log group cleaner stack', () => {
     }
   });
 
+  it('alarms on dropped scheduler deliveries via the Slack notifier', () => {
+    // Prepare
+    expect(slackNotifierLogicalId).toBeDefined();
+
+    // Assess - dropped deliveries never reach a queue, so this is the only
+    // signal that a scheduled deletion was lost
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'TestApp-Scheduler-DroppedDeliveries',
+      Namespace: 'AWS/Scheduler',
+      MetricName: 'InvocationDroppedCount',
+      Dimensions: [{ Name: 'ScheduleGroup', Value: 'default' }],
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: [
+        {
+          'Fn::GetAtt': [slackNotifierLogicalId, 'Arn'],
+        },
+      ],
+    });
+  });
+
   it('dead-letters each queue into its own DLQ', () => {
     // Prepare - queues are looked up by name, logical IDs are synthesized
     const queues = Object.entries(template.findResources('AWS::SQS::Queue'));

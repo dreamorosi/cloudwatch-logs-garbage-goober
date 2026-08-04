@@ -522,6 +522,36 @@ class LogGroupCleanerStack extends Stack {
     );
     ruleFailedInvocationsAlarm.addAlarmAction(alarmAction);
 
+    // Scheduler dropped invocations alarm - a schedule that cannot reach the
+    // deletion queue never produces a message, so no queue or DLQ metric moves
+    const schedulerDroppedDeliveriesAlarm = new Alarm(
+      this,
+      'scheduler-dropped-deliveries-alarm',
+      {
+        alarmName: `${appName}-Scheduler-DroppedDeliveries`,
+        alarmDescription:
+          'EventBridge Scheduler gave up delivering a deletion command: the failure happens before any message reaches the deletion queue, so it is invisible to the DLQ alarms and the log group is never deleted',
+        metric: new Metric({
+          namespace: 'AWS/Scheduler',
+          metricName: 'InvocationDroppedCount',
+          // Scheduler only dimensions these metrics by schedule group, and the
+          // deletion schedules are created without a group name, so they all
+          // land in `default`
+          dimensionsMap: {
+            ScheduleGroup: 'default',
+          },
+          period: Duration.minutes(5),
+          statistic: 'Sum',
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      }
+    );
+    schedulerDroppedDeliveriesAlarm.addAlarmAction(alarmAction);
+
     // Deletion DLQ alarm - any message in DLQ means permanent failure
     const dlqAlarm = new Alarm(this, 'dlq-alarm', {
       alarmName: `${appName}-DLQ-Messages`,
