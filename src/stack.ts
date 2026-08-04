@@ -240,7 +240,15 @@ class LogGroupCleanerStack extends Stack {
       denyActions: ['sqs:SendMessage'],
     });
 
-    // Allow EventBridge to send messages to the queue
+    // Allow EventBridge to send messages to the queue.
+    //
+    // The allow is scoped to this account with a positive condition: service
+    // calls carry `aws:SourceAccount`, and a positive operator does not match
+    // requests missing the key, so a delivery on behalf of another account (or
+    // with no source-account context at all) finds no allow here and is denied
+    // implicitly. This is what keeps cross-account service traffic out, since
+    // the queue policies carry no service-shaped deny — see
+    // `#addRequireTlsAndDenyCrossAccount`
     eventProcessingQueue.addToResourcePolicy(
       new PolicyStatement({
         sid: 'AllowEventBridge',
@@ -248,6 +256,9 @@ class LogGroupCleanerStack extends Stack {
         principals: [new ServicePrincipal('events.amazonaws.com')],
         actions: ['sqs:SendMessage'],
         resources: [eventProcessingQueue.queueArn],
+        conditions: {
+          StringEquals: { 'aws:SourceAccount': this.account },
+        },
       })
     );
 
@@ -373,6 +384,11 @@ class LogGroupCleanerStack extends Stack {
           },
         },
       },
+      // Attaching the queue as a target makes the CDK add a second allow for
+      // `events.amazonaws.com` to the queue policy, scoped with
+      // `ArnEquals: aws:SourceArn` to this rule. That is a positive condition
+      // on an ARN belonging to this stack, so it is account-scoped by
+      // construction — no cross-account service delivery can match it either
       targets: [new SqsQueue(eventProcessingQueue)],
       enabled: true,
     });
@@ -712,19 +728,30 @@ class LogGroupCleanerStack extends Stack {
   }
 
   /**
-   * Adds three DENY statements to a resource's policy:
+   * Adds two DENY statements to a resource's policy:
    *  - Deny non-TLS requests for specified actions (aws:SecureTransport = false)
    *  - Deny out-of-account IAM principals for the specified deny actions
-   *  - Deny cross-account service deliveries for the specified deny actions
    *
-   * The cross-account deny is split in two because `aws:SourceAccount` is only
-   * populated for service-to-service calls, and negated condition operators
-   * match requests where the key is missing altogether. A lone
-   * `StringNotEquals: aws:SourceAccount` denies every IAM-principal call
-   * (including EventBridge Scheduler delivering through an assumed role);
-   * `aws:PrincipalIsAWSService` therefore gates that statement's counterpart
-   * to non-service callers, while a `Null` check gates the service-shaped deny
-   * to requests where `aws:SourceAccount` is present.
+   * Cross-account access is kept out by two complementary halves, one per
+   * request shape:
+   *  - IAM-principal callers are caught by the explicit deny below, which is
+   *    written against `aws:PrincipalAccount` and gated to non-service callers
+   *    with `aws:PrincipalIsAWSService`, so that services acting on our behalf
+   *    (whose `aws:PrincipalAccount` is not this account) are not swept up
+   *  - Service callers are handled without any deny at all: every resource
+   *    policy statement that allows a service principal is scoped to this
+   *    account with a positive `StringEquals: aws:SourceAccount` condition
+   *    (see `AllowEventBridge`). A positive operator never matches a request
+   *    that lacks the key, so a service delivering for another account — or
+   *    carrying no source-account context — simply finds no allow and falls
+   *    through to the implicit deny
+   *
+   * A service-shaped deny is deliberately absent: expressing one needs the
+   * `Null` operator to tell "another account" apart from "no account in the
+   * request context", and SQS queue-policy validation rejects `Null` on
+   * `aws:SourceAccount` outright ("Context key aws:SourceAccount is not
+   * compatible with the NULL condition"), regardless of what the IAM policy
+   * simulator makes of it.
    *
    * @param options - options object
    * @param options.resource - object with addToResourcePolicy method (Queue or Topic)
@@ -755,7 +782,8 @@ class LogGroupCleanerStack extends Stack {
 
     // Callers with an IAM principal: deny anything outside this account, and
     // step aside for service principals, whose `aws:PrincipalAccount` is not
-    // this account (or absent) even when they act on our behalf
+    // this account (or absent) even when they act on our behalf. Those are
+    // instead kept in-account by the scoped service allows
     resource.addToResourcePolicy(
       new PolicyStatement({
         sid: 'DenyCrossAccountPrincipals',
@@ -766,23 +794,6 @@ class LogGroupCleanerStack extends Stack {
         conditions: {
           StringNotEquals: { 'aws:PrincipalAccount': this.account },
           Bool: { 'aws:PrincipalIsAWSService': 'false' },
-        },
-      })
-    );
-
-    // Service-to-service callers: deny them when they act for another account.
-    // The `Null` check keeps the statement from matching IAM-principal calls,
-    // which carry no `aws:SourceAccount` at all
-    resource.addToResourcePolicy(
-      new PolicyStatement({
-        sid: 'DenyCrossAccountServices',
-        effect: Effect.DENY,
-        principals: [new AnyPrincipal()],
-        actions: denyActions,
-        resources: ['*'],
-        conditions: {
-          StringNotEquals: { 'aws:SourceAccount': this.account },
-          Null: { 'aws:SourceAccount': 'false' },
         },
       })
     );
