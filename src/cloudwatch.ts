@@ -6,6 +6,16 @@ import {
 } from '@aws-sdk/client-cloudwatch-logs';
 import { logger } from './logger.js';
 
+/**
+ * CloudWatch Logs clients, keyed by region
+ *
+ * In practice this only ever holds a client for the region the stack is
+ * deployed to, since CloudTrail delivers `CreateLogGroup` events to the event
+ * bus of the region the call was made in. The region is nonetheless read from
+ * the message rather than the execution environment, so that a message whose
+ * region does not match is looked up where it claims to be instead of silently
+ * against the wrong region.
+ */
 const cwClientMap = new Map<string, CloudWatchLogsClient>();
 
 /**

@@ -52,6 +52,20 @@ This CDK application automatically schedules and executes deletion of CloudWatch
                                               └─────────────────┘
 ```
 
+### Single-Region Scope
+
+**The stack only cleans up log groups in the region it is deployed to.** CloudTrail records
+`CreateLogGroup` in the region the API call was made in and delivers the event to the default event
+bus of _that_ region, so the EventBridge rule — which exists only in the deployment region — never
+sees log groups created elsewhere. Matching log groups in other regions are simply never scheduled
+for deletion.
+
+To cover more regions, **deploy the stack once per region**. Each deployment is independent and
+watches only its own region. Use a distinct `appName` per region, since IAM role names are
+account-wide: two deployments in the same account sharing an `appName` would both try to create
+`{appName}-publish-to-queue-role` and the second one would fail. The IAM permissions granted to the
+handlers are scoped to the stack's own region accordingly.
+
 ## Configuration
 
 Create your configuration file from the template:
@@ -155,6 +169,9 @@ Two mechanisms prevent premature deletion:
    - Log group names starting with patterns defined in `logGroupPatterns`
    - Tags matching all key-value pairs in `requiredTags`
 
+   Only events from the deployment region reach the rule (see
+   [Single-Region Scope](#single-region-scope))
+
 2. **Buffering**: Events are sent to an SQS queue for throttling protection and batch processing.
    The queue delays delivery by 5 minutes so that the log group's retention policy, which is applied
    after the creation event, is visible to the handler (see [Retention Handling](#retention-handling))
@@ -214,6 +231,9 @@ npm run cdk deploy
 ```
 
 After deployment, **configure your Slack Workflow Builder** to receive the webhook notifications with the expected payload format.
+
+The stack is deployed into a single region and only cleans up log groups there — see
+[Single-Region Scope](#single-region-scope).
 
 ## Throttling Protection
 
