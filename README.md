@@ -19,10 +19,10 @@ This CDK application automatically schedules and executes deletion of CloudWatch
 ## Architecture
 
 ```txt
-┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│   CloudTrail    │────▶│  EventBridge │────▶│   SQS Queue     │
-│ CreateLogGroup  │     │     Rule     │     │ (Buffer, +5min) │
-└─────────────────┘     └──────────────┘     └────────┬────────┘
+┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
+│   CloudTrail    │────▶│  EventBridge │────▶│   SQS Queue     │────▶│  Event DLQ   │
+│ CreateLogGroup  │     │     Rule     │     │ (Buffer, +5min) │     │ (on failure) │
+└─────────────────┘     └──────────────┘     └────────┬────────┘     └──────────────┘
                                                        │
                                                        ▼
                                               ┌─────────────────┐
@@ -48,7 +48,7 @@ This CDK application automatically schedules and executes deletion of CloudWatch
                                                        │ (on failure)
                                                        ▼
                                               ┌─────────────────┐
-                                              │      DLQ        │
+                                              │  Deletion DLQ   │
                                               └─────────────────┘
 ```
 
@@ -90,6 +90,10 @@ Then edit `config.json` with your settings:
 | `deletionDelayDays`     | Days to wait after retention period before deleting            | `1`                                     |
 | `fallbackRetentionDays` | Retention assumed for log groups that never expire (see below) | `7`                                     |
 | `slackWebhookParameter` | SSM parameter name containing Slack workflow webhook URL       | `/slack-cloudwatch-alerts-webhook-url`  |
+
+> **Note:** the webhook parameter is expected to be encrypted with the AWS-managed `aws/ssm` key,
+> which needs no extra permissions to decrypt. If you encrypt it with a customer managed key, the
+> stack must also grant the notifier function `kms:Decrypt` on that key ARN.
 
 ### Tag Filtering Caveat
 
@@ -177,7 +181,10 @@ Two mechanisms prevent premature deletion:
 
 5. **Failure Handling**:
    - Failed deletions are retried up to 3 times
-   - Persistent failures go to the Dead Letter Queue (DLQ)
+   - Persistent failures go to a Dead Letter Queue (DLQ)
+   - Each queue has its own DLQ — `{appName}-event-processing-dlq` for creation events that could
+     not be scheduled and `{appName}-deletion-dlq` for log groups that could not be deleted — so
+     that messages redriven from a DLQ always go back to the queue they came from
    - CloudWatch Alarms notify via Slack when issues occur
 
 ## Prerequisites
@@ -225,14 +232,15 @@ This architecture prevents the "thundering herd" scenario that can occur during 
 
 The stack includes CloudWatch Alarms that send Slack notifications:
 
-| Alarm                              | Trigger                   | Description                                                  |
-| ---------------------------------- | ------------------------- | ------------------------------------------------------------ |
-| `{appName}-Rule-FailedInvocations` | >= 1 failed invocation    | EventBridge rule failed to deliver events to SQS             |
-| `{appName}-DLQ-Messages`           | >= 1 message in DLQ       | Permanent deletion failures requiring investigation          |
-| `{appName}-EventHandler-Errors`    | >= 1 error in 5 min       | Event handler Lambda errors                                  |
-| `{appName}-DeletionHandler-Errors` | >= 1 error in 5 min       | Deletion handler Lambda errors                               |
-| `{appName}-EventQueue-Depth`       | >= 50 messages for 10 min | Event processing queue backlog                               |
-| `{appName}-EventQueue-MessageAge`  | >= 600 seconds for 10 min | Event processing delays (on top of the 5 min delivery delay) |
+| Alarm                               | Trigger                   | Description                                                  |
+| ----------------------------------- | ------------------------- | ------------------------------------------------------------ |
+| `{appName}-Rule-FailedInvocations`  | >= 1 failed invocation    | EventBridge rule failed to deliver events to SQS             |
+| `{appName}-DLQ-Messages`            | >= 1 message in DLQ       | Permanent deletion failures requiring investigation          |
+| `{appName}-EventQueue-DLQ-Messages` | >= 1 message in DLQ       | Creation events that could not be scheduled for deletion     |
+| `{appName}-EventHandler-Errors`     | >= 1 error in 5 min       | Event handler Lambda errors                                  |
+| `{appName}-DeletionHandler-Errors`  | >= 1 error in 5 min       | Deletion handler Lambda errors                               |
+| `{appName}-EventQueue-Depth`        | >= 50 messages for 10 min | Event processing queue backlog                               |
+| `{appName}-EventQueue-MessageAge`   | >= 600 seconds for 10 min | Event processing delays (on top of the 5 min delivery delay) |
 
 ### Slack Payload Format
 
@@ -242,7 +250,7 @@ The Slack Workflow Builder webhook receives notifications with this payload:
 {
   "emoji": "🚨",
   "alarmName": "CWLogsGarbageGoober-DLQ-Messages",
-  "alarmDescription": "Messages in DLQ indicate repeated deletion failures requiring investigation",
+  "alarmDescription": "Messages in the deletion DLQ indicate repeated deletion failures requiring investigation",
   "cloudWatchUrl": "https://eu-west-1.console.aws.amazon.com/cloudwatch/home?region=eu-west-1#alarmsV2:alarm/CWLogsGarbageGoober-DLQ-Messages",
   "region": "eu-west-1",
   "alarmTime": "2025-01-02 14:28:58 UTC",
@@ -277,6 +285,7 @@ npm run cdk diff
 | Lambda            | `{appName}-deletion-handler`        | Deletes log groups from SQS messages               |
 | Lambda            | `{appName}-slack-workflow-notifier` | Sends alarm notifications to Slack                 |
 | SQS Queue         | `{appName}-event-processing-queue`  | Buffers CreateLogGroup events for batch processing |
+| SQS Queue         | `{appName}-event-processing-dlq`    | Dead letter queue for unscheduled creation events  |
 | SQS Queue         | `{appName}-deletion-queue`          | Queues deletion tasks                              |
 | SQS Queue         | `{appName}-deletion-dlq`            | Dead letter queue for failed deletions             |
 | EventBridge Rule  | `{appName}-Rule`                    | Captures CreateLogGroup events                     |

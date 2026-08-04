@@ -115,6 +115,7 @@ class LogGroupCleanerStack extends Stack {
     const deletionQueue = new Queue(this, 'deletion-queue', {
       queueName: `${appName}-deletion-queue`,
       retentionPeriod: Duration.days(14),
+      visibilityTimeout: Duration.minutes(3), // 6x Lambda timeout (30 sec)
       deadLetterQueue: {
         queue: deletionDLQ,
         maxReceiveCount: 3,
@@ -138,6 +139,15 @@ class LogGroupCleanerStack extends Stack {
     deletionQueue.grantSendMessages(publishToQueueRole);
 
     // Event processing queue for throttling protection
+    const eventProcessingDLQ = new Queue(this, 'event-processing-dlq', {
+      queueName: `${appName}-event-processing-dlq`,
+      retentionPeriod: Duration.days(14),
+    });
+    this.#addRequireTlsAndDenyCrossAccount({
+      resource: eventProcessingDLQ,
+      tlsActions: ['sqs:*'],
+      denyActions: ['sqs:SendMessage'],
+    });
     const eventProcessingQueue = new Queue(this, 'event-processing-queue', {
       queueName: `${appName}-event-processing-queue`,
       retentionPeriod: Duration.days(14),
@@ -145,8 +155,11 @@ class LogGroupCleanerStack extends Stack {
       // Delay the first delivery so that the retention policy applied right
       // after the log group creation is visible to the event handler
       deliveryDelay: RETENTION_SETTLE_DELAY,
+      // Raw CloudTrail events and deletion commands are different message
+      // shapes, so each queue dead-letters into its own DLQ to keep redrive
+      // unambiguous
       deadLetterQueue: {
-        queue: deletionDLQ,
+        queue: eventProcessingDLQ,
         maxReceiveCount: 3,
       },
     });
@@ -363,18 +376,30 @@ class LogGroupCleanerStack extends Stack {
     });
 
     // Grant SSM parameter read permissions
+    //
+    // The parameter is expected to be encrypted with the AWS-managed `aws/ssm`
+    // key, which grants decryption to callers allowed to read the parameter.
+    // A customer managed key would additionally need `kms:Decrypt` on the key
+    // ARN, which cannot be expressed against the parameter ARN below
     slackNotifier.addToRolePolicy(
       new PolicyStatement({
         effect: Effect.ALLOW,
-        actions: ['ssm:GetParameter', 'kms:Decrypt'],
+        actions: ['ssm:GetParameter'],
         resources: [
-          `arn:aws:ssm:${this.region}:${this.account}:parameter${slackWebhookParameter}`,
+          Arn.format(
+            {
+              service: 'ssm',
+              resource: 'parameter',
+              // Parameter names are configured with a leading slash, which the
+              // ARN format already adds as the resource separator
+              resourceName: slackWebhookParameter.replace(/^\//, ''),
+              arnFormat: ArnFormat.SLASH_RESOURCE_NAME,
+            },
+            this
+          ),
         ],
       })
     );
-
-    // Grant CloudWatch permission to invoke Lambda
-    slackNotifier.grantInvoke(new ServicePrincipal('cloudwatch.amazonaws.com'));
 
     // Suppress CDK-nag warning for AWS managed policy usage
     if (slackNotifier.role) {
@@ -387,6 +412,8 @@ class LogGroupCleanerStack extends Stack {
       ]);
     }
 
+    // Each alarm using this action gets its own `lambda:InvokeFunction`
+    // permission, scoped to the alarm ARN, so no manual grant is needed
     const alarmAction = new LambdaAction(slackNotifier);
 
     // EventBridge rule failed invocations alarm - happens if events can't be delivered to SQS
@@ -415,11 +442,11 @@ class LogGroupCleanerStack extends Stack {
     );
     ruleFailedInvocationsAlarm.addAlarmAction(alarmAction);
 
-    // DLQ alarm - any message in DLQ means permanent failure
+    // Deletion DLQ alarm - any message in DLQ means permanent failure
     const dlqAlarm = new Alarm(this, 'dlq-alarm', {
       alarmName: `${appName}-DLQ-Messages`,
       alarmDescription:
-        'Messages in DLQ indicate repeated deletion failures requiring investigation',
+        'Messages in the deletion DLQ indicate repeated deletion failures requiring investigation',
       metric: deletionDLQ.metricApproximateNumberOfMessagesVisible({
         period: Duration.minutes(1),
       }),
@@ -429,6 +456,27 @@ class LogGroupCleanerStack extends Stack {
       treatMissingData: TreatMissingData.NOT_BREACHING,
     });
     dlqAlarm.addAlarmAction(alarmAction);
+
+    // Event processing DLQ alarm - these log groups are never scheduled for
+    // deletion, so they would linger until someone redrives the messages
+    const eventProcessingDlqAlarm = new Alarm(
+      this,
+      'event-processing-dlq-alarm',
+      {
+        alarmName: `${appName}-EventQueue-DLQ-Messages`,
+        alarmDescription:
+          'Messages in the event processing DLQ indicate log group creation events that could not be scheduled for deletion',
+        metric: eventProcessingDLQ.metricApproximateNumberOfMessagesVisible({
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      }
+    );
+    eventProcessingDlqAlarm.addAlarmAction(alarmAction);
 
     // Event handler errors alarm
     const eventHandlerErrorAlarm = new Alarm(
