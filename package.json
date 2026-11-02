@@ -28,7 +28,7 @@
     "@mrgrain/cdk-esbuild": "^5.8.5",
     "@types/aws-lambda": "^8.10.162",
     "@types/node": "25.6.0",
-    "@vitest/coverage-v8": "^5.0.3",
+    "@vitest/coverage-v8": "^5.0.5",
     "aws-cdk": "^2.1146.1",
     "aws-sdk-client-mock": "^4.1.0",
     "aws-sdk-client-mock-vitest": "^8.0.0",
